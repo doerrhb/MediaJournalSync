@@ -1,0 +1,18 @@
+{
+  "manifest_version": 2,
+  "name": "Letterboxd Diary Exporter",
+  "version": "3.0",
+  "description": "Exports the latest Letterboxd diary movie and poster.",
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "storage",
+    "https://letterboxd.com/*"
+  ],
+  "browser_action": {
+    "default_title": "Export Latest Diary Movie"
+  },
+  "background": {
+    "scripts": ["background.js"]
+  }
+}

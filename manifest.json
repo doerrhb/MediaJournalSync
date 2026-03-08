@@ -7,12 +7,25 @@
     "activeTab",
     "downloads",
     "storage",
-    "https://letterboxd.com/*"
+    "https://letterboxd.com/*",
+    "https://www.goodreads.com/*",
+    "https://backloggd.com/*",
+    "https://boardgamegeek.com/*",
+    "https://www.serializd.com/*"
   ],
   "browser_action": {
-    "default_title": "Export Latest Diary Movie"
+    "default_icon": "icon128.png",
+    "default_title": "Media Journal Sync",
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "128": "icon128.png"
   },
   "background": {
-    "scripts": ["background.js"]
+    "scripts": ["config.js", "background.js"]
   }
 }

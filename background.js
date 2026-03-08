@@ -1,68 +1,112 @@
-browser.browserAction.onClicked.addListener(async (tab) => {
+async function handleExport(tab) {
+    console.log("Media Journal Sync - Execution triggered");
 
-    console.log("Letterboxd exporter triggered");
+    // Load configs from storage or fallback to SITE_CONFIGS
+    const storageData = await browser.storage.local.get("custom_urls");
+    const customUrls = storageData.custom_urls || {};
 
-    if (!tab.url.includes("/diary")) {
-        console.log("Not on a diary page");
-        return;
+    const config = SITE_CONFIGS.find(c => {
+        const url = customUrls[c.name] || ""; // Check custom URL first
+        return tab.url.includes(c.urlPattern) && tab.url.includes(c.pathPattern);
+    });
+
+    if (!config) {
+        console.log("No matching configuration for this URL:", tab.url);
+        return { success: false, error: "Not a supported site or page." };
     }
 
     try {
+        // Inject the configuration into the tab as a global variable
+        await browser.tabs.executeScript(tab.id, {
+            code: `var SITE_CONFIG = ${JSON.stringify(config)};`
+        });
 
+        // Execute scraper
         const results = await browser.tabs.executeScript(tab.id, {
             file: "scraper.js"
         });
 
-        const movie = results[0];
+        const entry = results[0];
 
-        console.log("Scraped movie:", movie);
-
-        if (!movie) {
-            console.log("No movie found on page");
-            return;
+        // Store debug logs even if entry fails
+        if (entry && entry.debugLogs) {
+            await browser.storage.local.set({ last_debug_logs: entry.debugLogs });
         }
 
-        const data = await browser.storage.local.get("movies");
-        const movies = data.movies || [];
+        console.log("Scraped entry:", entry);
 
-        const exists = movies.find(m =>
-            m.title === movie.title && m.year === movie.year
+        if (!entry || entry.error) {
+            console.log("No entry found on page or error occurred");
+            return { success: false, error: entry ? entry.error : "No entry found on page." };
+        }
+
+        // Storage key based on site name
+        const storageKey = `entries_${config.name.toLowerCase()}`;
+        const data = await browser.storage.local.get(storageKey);
+        const entries = data[storageKey] || [];
+
+        const exists = entries.find(e =>
+            e.title === entry.title && e.year === entry.year
         );
 
         if (!exists) {
-            movies.push(movie);
+            entries.push(entry);
         }
 
-        await browser.storage.local.set({ movies });
+        await browser.storage.local.set({ [storageKey]: entries });
 
-        const csv = buildCSV(movies);
-
+        const csv = buildCSV(entries);
         const blob = new Blob([csv], {type: "text/csv"});
         const url = URL.createObjectURL(blob);
 
+        // Extensions download to the default Downloads folder
         await browser.downloads.download({
             url,
-            filename: "letterboxd_movies.csv"
+            filename: config.filename,
+            conflictAction: "uniquify"
         });
 
-        console.log("CSV download triggered");
+        console.log("CSV download triggered:", config.filename);
 
-        if (movie.poster) {
-
+        if (entry.poster) {
             await browser.downloads.download({
-                url: movie.poster,
-                filename: `letterboxd_posters/${sanitize(movie.title)}_${movie.year}.jpg`
+                url: entry.poster,
+                filename: `${config.folder}/${sanitize(entry.title)}_${entry.year || 'unknown'}.jpg`,
+                conflictAction: "uniquify"
             });
 
-            console.log("Poster download triggered");
+            console.log("Artwork download triggered");
         }
 
+        return { success: true };
+
     } catch (err) {
-
         console.error("Extension error:", err);
-
+        return { success: false, error: err.message };
     }
+}
 
+async function downloadDebugLogs() {
+    const data = await browser.storage.local.get("last_debug_logs");
+    const logs = data.last_debug_logs || ["No logs found. Try running an export first."];
+    const blob = new Blob([logs.join("\n")], {type: "text/plain"});
+    const url = URL.createObjectURL(blob);
+    
+    await browser.downloads.download({
+        url,
+        filename: "media_sync_debug_log.txt",
+        conflictAction: "uniquify"
+    });
+}
+
+browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === "export_page") {
+        handleExport(message.tab).then(sendResponse);
+        return true;
+    } else if (message.action === "download_logs") {
+        downloadDebugLogs().then(() => sendResponse({ success: true }));
+        return true;
+    }
 });
 
 function buildCSV(movies) {

@@ -18,20 +18,72 @@ document.addEventListener('DOMContentLoaded', async () => {
         exportBtn.title = "Navigate to a supported diary/journal page to export.";
     }
 
-    // Export Current Page
+    let currentEntry = null;
+    let currentConfig = null;
+
+    // Export/Scrape Logic
     exportBtn.addEventListener('click', async () => {
-        statusDiv.textContent = "Exporting...";
+        statusDiv.textContent = "Scraping...";
         statusDiv.style.display = 'block';
+        statusDiv.style.color = "inherit";
         
         try {
             const response = await browser.runtime.sendMessage({
-                action: "export_page",
+                action: "scrape_page",
                 tab: tab
             });
 
             if (response && response.success) {
-                statusDiv.textContent = "Success!";
+                statusDiv.style.display = 'none';
+                currentEntry = response.entry;
+                currentConfig = response.config;
+
+                // Populate review section
+                document.getElementById('reviewTitle').value = currentEntry.title || "";
+                document.getElementById('reviewYear').value = currentEntry.year || "";
+                document.getElementById('reviewPoster').src = currentEntry.poster || "";
+                
+                // Show review section, hide main menu
+                document.getElementById('mainMenu').style.display = "none";
+                document.getElementById('reviewSection').style.display = "block";
+            } else {
+                statusDiv.textContent = "Error: " + (response ? response.error : "Unknown error");
+                statusDiv.style.color = "red";
+                setTimeout(() => statusDiv.style.display = 'none', 3000);
+            }
+        } catch (err) {
+            statusDiv.textContent = "Error: " + err.message;
+            statusDiv.style.color = "red";
+            setTimeout(() => statusDiv.style.display = 'none', 3000);
+        }
+    });
+
+    // Save Logic
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+        statusDiv.textContent = "Saving...";
+        statusDiv.style.display = 'block';
+        statusDiv.style.color = "inherit";
+        
+        // Update entry with edited values
+        currentEntry.title = document.getElementById('reviewTitle').value;
+        currentEntry.year = document.getElementById('reviewYear').value;
+
+        try {
+            const response = await browser.runtime.sendMessage({
+                action: "save_entry",
+                entry: currentEntry,
+                config: currentConfig
+            });
+
+            if (response && response.success) {
+                statusDiv.textContent = "Saved successfully!";
                 statusDiv.style.color = "green";
+                
+                setTimeout(() => {
+                    document.getElementById('reviewSection').style.display = "none";
+                    document.getElementById('mainMenu').style.display = "block";
+                    statusDiv.style.display = 'none';
+                }, 1500);
             } else {
                 statusDiv.textContent = "Error: " + (response ? response.error : "Unknown error");
                 statusDiv.style.color = "red";
@@ -40,10 +92,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             statusDiv.textContent = "Error: " + err.message;
             statusDiv.style.color = "red";
         }
+    });
 
-        setTimeout(() => {
-            statusDiv.style.display = 'none';
-        }, 3000);
+    // Cancel Review
+    document.getElementById('cancelBtn').addEventListener('click', () => {
+        document.getElementById('reviewSection').style.display = "none";
+        document.getElementById('mainMenu').style.display = "block";
+        statusDiv.style.display = 'none';
     });
 
     // Open Source Pages

@@ -81,9 +81,34 @@
 
     <div id="status"></div>
 
-    <button id="exportBtn">Export Current Page</button>
-    <button id="openSourcesBtn" class="secondary">Open source pages?</button>
-    <button id="debugBtn" class="secondary" style="font-size: 11px; margin-top: 5px;">Download Debug Logs</button>
+    <div id="mainMenu">
+        <button id="exportBtn">Export Current Page</button>
+        <button id="openSourcesBtn" class="secondary">Open source pages?</button>
+        <button id="debugBtn" class="secondary" style="font-size: 11px; margin-top: 5px;">Download Debug Logs</button>
+    </div>
+
+    <div id="reviewSection" style="display: none;">
+        <div style="margin-bottom: 10px; font-weight: bold; border-bottom: 1px solid #eee; padding-bottom: 5px;">Review Entry</div>
+        
+        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+            <div id="previewContainer" style="flex: 0 0 80px;">
+                <img id="reviewPoster" src="" style="width: 80px; height: 120px; object-fit: cover; border-radius: 4px; background: #eee;">
+            </div>
+            <div style="flex: 1;">
+                <div class="field" style="margin-bottom: 8px;">
+                    <label style="display: block; font-size: 11px; color: #666;">Title</label>
+                    <input type="text" id="reviewTitle" style="width: 100%; padding: 5px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px;">
+                </div>
+                <div class="field">
+                    <label style="display: block; font-size: 11px; color: #666;">Year</label>
+                    <input type="text" id="reviewYear" style="width: 100%; padding: 5px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px;">
+                </div>
+            </div>
+        </div>
+
+        <button id="saveBtn">Confirm & Save</button>
+        <button id="cancelBtn" class="secondary">Cancel</button>
+    </div>
 
     <div class="footer">
         <div style="font-size: 10px; color: #888; margin-bottom: 5px;">Files saved to your Downloads folder.</div>

@@ -14,7 +14,149 @@
         logs.push(msg);
     };
 
-    // Find the primary entry link to get context
+    // ── Date helpers ──────────────────────────────────────────────────────────
+
+    /**
+     * Attempt to parse any date string / href into M/D/YYYY format.
+     */
+    function normalizeDate(raw, parseMode, siteName) {
+        if (!raw) return "";
+        raw = raw.trim();
+
+        // Letterboxd: href like "/doerrhb/diary/for/2026/01/15/"
+        if (parseMode === "letterboxd-href") {
+            const m = raw.match(/\/diary\/for\/(\d{4})\/(\d{2})\/(\d{2})/);
+            if (m) return `${parseInt(m[2])}/${parseInt(m[3])}/${m[1]}`;
+            return "";
+        }
+
+        // ISO datetime attribute: "2026-01-15" or "2026-01-15T00:00:00"
+        const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (iso) return `${parseInt(iso[2])}/${parseInt(iso[3])}/${iso[1]}`;
+
+        // "Jan 15, 2026" / "January 15, 2026" / "Jan 15 2026"
+        const months = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+        const longM = raw.match(/(\w{3,9})\s+(\d{1,2})[,\s]+(\d{4})/i);
+        if (longM) {
+            const mon = months[longM[1].toLowerCase().slice(0,3)];
+            if (mon) return `${mon}/${parseInt(longM[2])}/${longM[3]}`;
+        }
+
+        // "15 Jan 2026" / "15 January 2026"
+        const dayFirst = raw.match(/(\d{1,2})\s+(\w{3,9})\s+(\d{4})/i);
+        if (dayFirst) {
+            const mon = months[dayFirst[2].toLowerCase().slice(0,3)];
+            if (mon) return `${mon}/${parseInt(dayFirst[1])}/${dayFirst[3]}`;
+        }
+
+        // "2026-01-15" already handled by ISO above
+        // MM/DD/YYYY passthrough
+        const slashDate = raw.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+        if (slashDate) return raw;
+
+        return "";
+    }
+
+    function extractDate(row, selectors, siteName) {
+        if (!selectors.dateSelector) return "";
+
+        const dateEl = row.querySelector(selectors.dateSelector);
+        if (!dateEl) {
+            log(`Date selector '${selectors.dateSelector}' found no element.`);
+            return "";
+        }
+
+        let raw = "";
+        if (selectors.dateAttribute) {
+            raw = dateEl.getAttribute(selectors.dateAttribute) || "";
+        }
+        if (!raw) raw = dateEl.textContent.trim();
+
+        const parsed = normalizeDate(raw, selectors.dateParse, siteName);
+        if (parsed) {
+            log(`Date extracted: ${parsed} (raw: "${raw}")`);
+        } else {
+            log(`Could not parse date from: "${raw}"`);
+        }
+        return parsed;
+    }
+
+    // ── Rating helpers ────────────────────────────────────────────────────────
+
+    function extractRating(row, selectors, siteName) {
+        if (!selectors.ratingSelector) return "";
+
+        const ratingEl = row.querySelector(selectors.ratingSelector);
+        if (!ratingEl) {
+            log(`Rating selector '${selectors.ratingSelector}' found no element.`);
+            return "";
+        }
+
+        const parseMode = selectors.ratingParse || "text-numeric";
+        let rating = "";
+
+        // Letterboxd CSS class approach: "rating rated-8" → 4.0
+        if (parseMode === "letterboxd-class") {
+            const cls = ratingEl.getAttribute("class") || "";
+            const m = cls.match(/rated-(\d+)/);
+            if (m) {
+                rating = (parseInt(m[1]) / 2).toString();
+                log(`Rating (Letterboxd class): ${rating}`);
+                return rating;
+            }
+        }
+
+        // data-rating attribute (Goodreads)
+        if (parseMode === "data-attr" || selectors.ratingAttribute) {
+            const val = ratingEl.getAttribute(selectors.ratingAttribute || "data-rating");
+            if (val && !isNaN(parseFloat(val))) {
+                rating = val.trim();
+                log(`Rating (data attribute): ${rating}`);
+                return rating;
+            }
+        }
+
+        // Count filled stars in child elements (many sites use icon spans)
+        const filledStars = ratingEl.querySelectorAll(
+            '.star-filled, .icon-star-filled, [class*="filled"], [class*="active"], [aria-label*="star"]'
+        ).length;
+        if (filledStars > 0) {
+            log(`Rating (filled stars): ${filledStars}`);
+            return filledStars.toString();
+        }
+
+        // Try aria-label on the element itself (e.g. "4 out of 5 stars")
+        const aria = ratingEl.getAttribute("aria-label") || "";
+        const ariaMatch = aria.match(/(\d+(?:\.\d+)?)\s*(?:out\s*of|\/)/i);
+        if (ariaMatch) {
+            log(`Rating (aria-label): ${ariaMatch[1]}`);
+            return ariaMatch[1];
+        }
+
+        // Plain text numeric
+        const text = ratingEl.textContent.trim();
+        const numMatch = text.match(/(\d+(?:\.\d+)?)/);
+        if (numMatch && parseFloat(numMatch[1]) <= 10) {
+            rating = numMatch[1];
+            log(`Rating (text): ${rating}`);
+            return rating;
+        }
+
+        // Count star characters ★ / ½
+        const starCount = (text.match(/★/g) || []).length;
+        const halfStar = text.includes('½') ? 0.5 : 0;
+        if (starCount > 0) {
+            rating = (starCount + halfStar).toString();
+            log(`Rating (star chars): ${rating}`);
+            return rating;
+        }
+
+        log(`Could not parse rating from: "${text}"`);
+        return "";
+    }
+
+    // ── Entry-link / row detection (unchanged from original) ─────────────────
+
     log(`Searching for entry links with selector: ${selectors.entryLink}`);
     let links = [...document.querySelectorAll(selectors.entryLink)];
 
@@ -34,14 +176,13 @@
     }
 
     log(`Found ${links.length} potential entry links. Searching for a valid row container...`);
-    
+
     let first = null;
     let row = null;
 
     for (const link of links) {
         let potentialRow = link.closest(selectors.row);
-        
-        // If specific row selector didn't work, try common containers as fallbacks
+
         if (!potentialRow) {
             potentialRow = link.closest("tr") || link.closest("li") || link.closest(".card") || link.closest("div.row");
         }
@@ -52,7 +193,6 @@
             log(`Found valid row for: ${link.href}`);
             break;
         } else {
-            // Log parent hierarchy for debugging
             let p = link.parentElement;
             let hierarchy = [];
             for (let i = 0; i < 3 && p; i++) {
@@ -70,7 +210,8 @@
 
     log(`Row container found. Extracting data...`);
 
-    // Extraction logic
+    // ── Title ─────────────────────────────────────────────────────────────────
+
     let title = "";
     if (selectors.title) {
         log(`Searching for title with selector: ${selectors.title}`);
@@ -83,7 +224,6 @@
         }
     }
 
-    // Extraction Logic Fallbacks
     if (!title) {
         log(`Trying title fallbacks...`);
         if (config.name === "Letterboxd") {
@@ -94,7 +234,7 @@
                 log(`Title (Letterboxd slug) fallback: ${title}`);
             }
         }
-        
+
         if (!title) {
             const img = row.querySelector("img[alt]");
             if (img) {
@@ -123,6 +263,8 @@
         }
     }
 
+    // ── Year ──────────────────────────────────────────────────────────────────
+
     let year = "";
     if (selectors.yearRegex) {
         log(`Searching for year with regex: ${selectors.yearRegex}`);
@@ -136,34 +278,54 @@
         }
     }
 
+    // ── Date ─────────────────────────────────────────────────────────────────
+
+    log(`Extracting date...`);
+    const date = extractDate(row, selectors, config.name);
+
+    // ── Rating ────────────────────────────────────────────────────────────────
+
+    log(`Extracting rating...`);
+    const rating = extractRating(row, selectors, config.name);
+
+    // ── Platform (Backloggd) ──────────────────────────────────────────────────
+
+    let platform = "";
+    if (selectors.platformSelector) {
+        const platformEl = row.querySelector(selectors.platformSelector);
+        if (platformEl) {
+            platform = platformEl.textContent.trim();
+            log(`Platform found: ${platform}`);
+        }
+    }
+
+    // ── Poster / Image ────────────────────────────────────────────────────────
+
     let poster = null;
 
     const getBestSrc = (img) => {
         if (!img) return null;
-        // Try srcset for high-res first
         const srcset = img.getAttribute('srcset');
         if (srcset) {
             const sources = srcset.split(',').map(s => s.trim().split(' ')[0]);
             if (sources.length > 0) return sources[sources.length - 1];
         }
-        // Try common lazy-load attributes
-        return img.getAttribute('data-src') || 
-               img.getAttribute('data-original') || 
-               img.getAttribute('data-lazy-src') || 
+        return img.getAttribute('data-src') ||
+               img.getAttribute('data-original') ||
+               img.getAttribute('data-lazy-src') ||
                img.getAttribute('src');
     };
 
     const isInvalidImage = (url) => {
         if (!url) return true;
-        // Block known placeholders, backgrounds, and horizontal crops (backdrops)
-        return /backdrop|background|banner|hero|empty-poster|placeholder|spacer|pixel/i.test(url) || 
-               /-1200-.*-675-/i.test(url); // Common Letterboxd backdrop pattern
+        return /backdrop|background|banner|hero|empty-poster|placeholder|spacer|pixel/i.test(url) ||
+               /-1200-.*-675-/i.test(url);
     };
 
     // Optional Detail Fetching for High-Res Images
     if (config.fetchDetail && first && first.href) {
         let fetchUrl = first.href;
-        
+
         // Letterboxd URL Normalization
         if (config.name === "Letterboxd") {
             const lbMatch = fetchUrl.match(/(letterboxd\.com\/)(?:[^\/]+\/)(film\/[^\/]+\/?)/);
@@ -183,8 +345,8 @@
             const html = await response.text();
             const parser = new DOMParser();
             const doc = parser.parseFromString(html, "text/html");
-            
-            // 1. Try Specific Selectors First (Highest Priority)
+
+            // 1. Try Specific Selectors First
             if (selectors.detailImage) {
                 const detailImg = doc.querySelector(selectors.detailImage);
                 if (detailImg) {
@@ -198,7 +360,6 @@
                     }
                 }
 
-                // 2. Try Container Drilling (If selector was "div img", try finding the div)
                 if (!poster && selectors.detailImage.includes(' img')) {
                     const containerSelector = selectors.detailImage.split(' img')[0];
                     const container = doc.querySelector(containerSelector);
@@ -218,7 +379,7 @@
                 }
             }
 
-            // 3. Try OpenGraph Meta Tags (Medium Priority)
+            // 2. Try OpenGraph Meta Tags
             if (!poster) {
                 const ogImage = doc.querySelector('meta[property="og:image"], meta[property="og:image:url"]');
                 if (ogImage && ogImage.content) {
@@ -230,7 +391,7 @@
                 }
             }
 
-            // 4. Last Ditch Search (Lowest Priority)
+            // 3. Last Ditch Search
             if (!poster) {
                 log(`No poster found via selectors or meta. Scanning all images...`);
                 const images = [...doc.querySelectorAll('img')];
@@ -239,7 +400,6 @@
                     const cls = img.className || "";
                     const id = img.id || "";
                     const alt = img.getAttribute('alt') || "";
-                    // Must contain "poster" but NOT be a backdrop/placeholder
                     return (src.includes('poster') || cls.includes('poster') || id.includes('poster') || alt.includes('poster')) && !isInvalidImage(src);
                 });
 
@@ -255,12 +415,12 @@
         }
     }
 
-    // Clean title prefix (e.g., "Board Game: Risk: Europe" -> "Risk: Europe")
+    // Clean title prefix
     if (title) {
         title = title.replace(/^(Board|Video|Card) Game:\s+/i, "");
     }
 
-    // Fallback to local image if detail fetch failed or wasn't requested
+    // Fallback to local image
     if (!poster && selectors.image) {
         log(`Searching for artwork with selector: ${selectors.image}`);
         const img = row.querySelector(selectors.image);
@@ -278,17 +438,20 @@
                 }
             }
         }
-        
+
         if (!poster) {
             log(`Artwork selector returned no valid element.`);
         }
     }
 
-    log(`Extraction complete for ${title}`);
+    log(`Extraction complete: title="${title}" date="${date}" rating="${rating}" year="${year}" platform="${platform}"`);
 
     return {
         title,
         year,
+        date,
+        rating,
+        platform,
         poster,
         debugLogs: logs
     };

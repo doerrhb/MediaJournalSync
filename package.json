@@ -1,0 +1,49 @@
+{
+  "name": "media-journal-sync",
+  "version": "1.0.0",
+  "description": "Scan your media diary sites and sync to Google Sheets",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win --x64",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "simple-git": "^3.22.0"
+  },
+  "devDependencies": {
+    "electron": "^29.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.mediajournalsync.app",
+    "productName": "Media Journal Sync",
+    "icon": "assets/icon",
+    "files": [
+      "main.js",
+      "preload.js",
+      "config.js",
+      "scraper.js",
+      "renderer/**/*",
+      "assets/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "nsis": {
+      "oneClick": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

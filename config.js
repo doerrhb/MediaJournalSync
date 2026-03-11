@@ -1,14 +1,11 @@
 /*
   Media Journal Sync - Configuration File
-  Edit this file to add or update selectors for different sites.
 
-  reviewFields defines exactly what the review panel shows for each site.
-  Each entry: { key, label, placeholder, required, width }
-    key         - matches entry property (title, date, rating, year, platform)
-    label       - shown above the input
-    placeholder - hint text when empty
-    required    - highlights red if missing
-    width       - "full" or "half" (default half for short fields)
+  reviewFields defines what the review panel shows per site.
+  waitForSelector:     CSS selector to poll for before running scraper (React/SPA sites).
+  titleStripYear:      strip trailing " (YYYY)" from title after extraction.
+  dateFromParent:      walk up the DOM tree to find a date header above the card.
+  detailLinkSelector:  override which link is followed for detail-page fetching.
 */
 
 const SITE_CONFIGS = [
@@ -16,29 +13,36 @@ const SITE_CONFIGS = [
         name: "Letterboxd",
         urlPattern: "letterboxd.com",
         pathPattern: "/diary/",
-        fetchDetail: true,
+        // fetchDetail disabled — inline URL upscaling handles images reliably.
+        // The detail fetch was failing because Letterboxd lazy-loads poster JS.
+        fetchDetail: false,
+        titleStripYear: true,   // span.frame-title contains "Bloodsport (1988)" — strip year
         sheetTab: "Movies",
         csvFields: ["title", "date", "rating", "year"],
         csvHeaders: "Movie Name,Date Watched,Rating,Year",
         reviewFields: [
-            { key: "title",  label: "Movie Title",   placeholder: "",          required: true,  width: "full" },
-            { key: "date",   label: "Date Watched",  placeholder: "M/D/YYYY",  required: false, width: "half" },
-            { key: "rating", label: "Rating (★/5)",  placeholder: "e.g. 3.5",  required: false, width: "half" },
-            { key: "year",   label: "Release Year",  placeholder: "YYYY",      required: true,  width: "half" }
+            { key: "title",  label: "Movie Title",  placeholder: "",         required: true,  width: "full" },
+            { key: "date",   label: "Date Watched", placeholder: "M/D/YYYY", required: false, width: "half" },
+            { key: "rating", label: "Rating (★/5)", placeholder: "e.g. 3.5", required: false, width: "half" },
+            { key: "year",   label: "Release Year", placeholder: "YYYY",     required: true,  width: "half" }
         ],
         selectors: {
             entryLink: 'a[href*="/film/"]',
-            row: 'tr, li, div',
-            title: ".td-title h3, .td-title .name",
+            // MUST be "tr" only. "div" in a multi-selector matches the inner div.film-poster
+            // BEFORE reaching the <tr>, making sibling td selectors for date/rating invisible.
+            row: "tr",
+            // span.frame-title inside the poster div: "Bloodsport (1988)"
+            // titleStripYear trims the " (YYYY)" suffix
+            title: "span.frame-title",
             yearRegex: "\\b(19|20)\\d{2}\\b",
-            image: "img",
-            dateSelector: "td.td-calendar a, .td-calendar a",
+            image: "img.image",
+            // Calendar td: <a href="/doerrhb/diary/for/2026/03/10/">
+            dateSelector: "td.td-calendar a",
             dateAttribute: "href",
             dateParse: "letterboxd-href",
-            ratingSelector: "span.rating[class*='rated-']",
-            ratingAttribute: "class",
-            ratingParse: "letterboxd-class",
-            detailImage: "section.poster-container a img, .film-poster img, .poster img"
+            // Rating td: <span class="rating rated-8"> means 4 stars (rated-X / 2)
+            ratingSelector: "td.td-rating span.rating",
+            ratingParse: "letterboxd-class"
         },
         filename: "letterboxd_movies.csv",
         folder: "Images/movies"
@@ -76,26 +80,27 @@ const SITE_CONFIGS = [
         name: "Backloggd",
         urlPattern: "backloggd.com",
         pathPattern: "/u/",
+        dateFromParent: true,   // date lives in a section/date heading above the game card
         sheetTab: "Video Games",
         csvFields: ["title", "date", "rating", "platform"],
         csvHeaders: "Video Game Name,Date Played,Rating,Platform",
         reviewFields: [
-            { key: "title",    label: "Game Title",    placeholder: "",          required: true,  width: "full" },
-            { key: "platform", label: "Platform",      placeholder: "e.g. PC",   required: true,  width: "full" },
-            { key: "date",     label: "Date Played",   placeholder: "M/D/YYYY",  required: false, width: "half" },
-            { key: "rating",   label: "Rating (★/5)",  placeholder: "e.g. 4.5",  required: false, width: "half" }
+            { key: "title",    label: "Game Title",   placeholder: "",         required: true,  width: "full" },
+            { key: "platform", label: "Platform",     placeholder: "e.g. PC",  required: true,  width: "full" },
+            { key: "date",     label: "Date Played",  placeholder: "M/D/YYYY", required: false, width: "half" },
+            { key: "rating",   label: "Rating (★/5)", placeholder: "e.g. 4.5", required: false, width: "half" }
         ],
         selectors: {
             entryLink: 'a[href^="/games/"]:not([href*="/lib/"]):not([href*="/popular/"]):not([href*="/releases/"]):not([href*="/browse/"])',
             row: ".journal-entry, .card.game-cover, .game-card, .mx-auto.row",
             yearRegex: "\\b(19|20)\\d{2}\\b",
             image: "img.card-img, img.game-cover",
-            dateSelector: "time, .date, .journal-date, .played-date, [class*='date']",
+            // In-card date as fast path; dateFromParent walks up on miss
+            dateSelector: ".date, .journal-date, .played-date, time",
             dateAttribute: "datetime",
             dateParse: "datetime-or-text",
-            ratingSelector: ".rating, .star-rating, [class*='rating']",
-            ratingParse: "text-numeric",
-            subtitle: 'a[href*="played_platform"]',
+            ratingSelector: ".user-rating, .game-rating, .stars-rating, .rating-display",
+            ratingParse: "text-or-class",
             platformSelector: 'a[href*="played_platform"]'
         },
         filename: "backloggd_games.csv",
@@ -110,20 +115,21 @@ const SITE_CONFIGS = [
         csvFields: ["title", "date", "rating"],
         csvHeaders: "Board Game Name,Date Played,Rating",
         reviewFields: [
-            { key: "title",  label: "Game Title",     placeholder: "",          required: true,  width: "full" },
-            { key: "date",   label: "Date Played",    placeholder: "M/D/YYYY",  required: false, width: "half" },
-            { key: "rating", label: "Rating (1–10)",  placeholder: "e.g. 7",    required: false, width: "half" }
+            { key: "title",  label: "Game Title",    placeholder: "",         required: true,  width: "full" },
+            { key: "date",   label: "Date Played",   placeholder: "M/D/YYYY", required: false, width: "half" },
+            { key: "rating", label: "Rating (1–10)", placeholder: "e.g. 7",   required: false, width: "half" }
         ],
         selectors: {
             entryLink: 'main table a[href*="/boardgame/"]',
             row: "tr[id^='play_'], .collection_table tr, main table tr, tr",
             yearRegex: "\\b(19|20)\\d{2}\\b",
             image: "img.collection_thumbnail, img.thumbnail, img",
-            dateSelector: "td.collection_plays, td[class*='date'], td:nth-child(1)",
-            dateParse: "text",
-            ratingSelector: "td.collection_bggrating, td[class*='rating'], .play-rating",
+            // BGG geekplay shows dates as ISO "2026-03-10" — scan row text with regex
+            dateRegex: "\\b\\d{4}-\\d{2}-\\d{2}\\b",
+            // User's personal rating column (rightmost numeric cell)
+            ratingSelector: "td.collection_yourrating, td.col_yourrating",
             ratingParse: "text-numeric",
-            detailImage: ".game-header-image-container img, img.img-responsive"
+            detailImage: ".game-header-image-container img, img.img-responsive, img[src*='cf.geekdo-images.com']"
         },
         filename: "bgg_plays.csv",
         folder: "Images/boardgames"
@@ -132,26 +138,33 @@ const SITE_CONFIGS = [
         name: "Serializd",
         urlPattern: "serializd.com",
         pathPattern: "/user/",
+        fetchDetail: true,
+        dateFromParent: true,   // date may be in a heading above the diary entry card
         sheetTab: "TV Shows",
         csvFields: ["title", "date", "rating"],
         csvHeaders: "TV Show Name,Date Watched,Rating",
         reviewFields: [
-            { key: "title",  label: "Show & Season",  placeholder: "",          required: true,  width: "full" },
-            { key: "date",   label: "Date Watched",   placeholder: "M/D/YYYY",  required: false, width: "half" },
-            { key: "rating", label: "Rating (★/5)",   placeholder: "e.g. 5",    required: false, width: "half" }
+            { key: "title",  label: "Show & Season", placeholder: "",         required: true,  width: "full" },
+            { key: "date",   label: "Date Watched",  placeholder: "M/D/YYYY", required: false, width: "half" },
+            { key: "rating", label: "Rating (★/5)",  placeholder: "e.g. 5",   required: false, width: "half" }
         ],
+        // React SPA — wait for diary entries to render
+        waitForSelector: 'a[href*="/show/"]',
         selectors: {
             entryLink: 'a[href*="/show/"]',
-            row: ".diary-entry, .show-card, .search-result-row, .diary-entry-details, div.jsx-3985971936",
-            title: "h2, .show-title, .title",
-            subtitle: ".small-text, .season-text, div[style*='margin-top: 4px']",
+            row: ".diary-log, .diary-entry, div[class*='diary']",
+            title: "h2",
+            subtitle: ".small-text",
             yearRegex: "\\b(19|20)\\d{2}\\b",
-            image: "img",
-            dateSelector: "time, .diary-date, .watched-date, [class*='date']",
-            dateAttribute: "datetime",
-            dateParse: "datetime-or-text",
-            ratingSelector: ".rating, .star-rating, [class*='rating']",
-            ratingParse: "text-or-class"
+            image: "img[alt*='Poster'], img[alt*='poster'], img",
+            // Right-hand side of the space-between flex container holds the date
+            dateSelector: "div[style*='justify-content: space-between'] > div:last-child, div[style*='flex-direction: row'] > div:last-child",
+            dateParse: "text",
+            // Rating: handled by SVG star counting in scraper.js (no class selector available)
+            ratingSelector: null,
+            // For detail fetch: follow the review link that wraps the whole entry
+            detailLinkSelector: "a[href*='/review/']",
+            detailImage: "img[alt*='Poster'], img[src*='tmdb'], .poster img"
         },
         filename: "serializd_shows.csv",
         folder: "Images/tvshows"

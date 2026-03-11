@@ -7,30 +7,97 @@ const http  = require('http');
 // ── Paths ─────────────────────────────────────────────────────────────────────
 const USER_DATA   = app.getPath('userData');
 const SETTINGS_F  = path.join(USER_DATA, 'settings.json');
+const LOG_DIR     = path.join(USER_DATA, 'logs');
 const SCRAPER_SRC = fs.readFileSync(path.join(__dirname, 'scraper.js'), 'utf8');
 
 nativeTheme.themeSource = 'dark';
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LOGGING
+// Log lines are:
+//   - Written to a rolling log file in %AppData%\media-journal-sync\logs\
+//   - Forwarded to the renderer via IPC so the UI log panel updates live
+//   - Also printed to stdout for npm start debugging
+// ══════════════════════════════════════════════════════════════════════════════
+
+fs.mkdirSync(LOG_DIR, { recursive: true });
+
+// One log file per day, named YYYY-MM-DD.log
+function todayLogPath() {
+    const d = new Date();
+    const name = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}.log`;
+    return path.join(LOG_DIR, name);
+}
+
+// Keep only last 30 log files
+function pruneOldLogs() {
+    try {
+        const files = fs.readdirSync(LOG_DIR)
+            .filter(f => f.endsWith('.log'))
+            .sort()
+            .reverse();
+        files.slice(30).forEach(f => {
+            try { fs.unlinkSync(path.join(LOG_DIR, f)); } catch(_) {}
+        });
+    } catch(_) {}
+}
+
+pruneOldLogs();
+
+let mainWin = null;
+
+/**
+ * Central log function — every log in the app goes through here.
+ * level: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG' | 'SCRAPER'
+ */
+function log(level, site, message) {
+    const ts   = new Date().toISOString();
+    const line = `[${ts}] [${level.padEnd(7)}] [${(site||'APP').padEnd(15)}] ${message}`;
+
+    // 1. Write to file
+    try { fs.appendFileSync(todayLogPath(), line + '\n'); } catch(_) {}
+
+    // 2. Print to terminal (useful during npm start development)
+    console.log(line);
+
+    // 3. Forward to renderer if window is ready
+    if (mainWin && !mainWin.isDestroyed()) {
+        try {
+            mainWin.webContents.send('log-line', { ts, level, site: site || 'APP', message });
+        } catch(_) {}
+    }
+}
+
+// Convenience wrappers
+const logInfo  = (site, msg) => log('INFO',    site, msg);
+const logWarn  = (site, msg) => log('WARN',    site, msg);
+const logError = (site, msg) => log('ERROR',   site, msg);
+const logDebug = (site, msg) => log('DEBUG',   site, msg);
+
+// Expose log path to renderer
+ipcMain.handle('get-log-dir',      ()  => LOG_DIR);
+ipcMain.handle('get-today-log',    ()  => todayLogPath());
+ipcMain.handle('open-log-folder',  ()  => shell.openPath(LOG_DIR));
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function loadSettings() {
     try {
         if (fs.existsSync(SETTINGS_F)) return JSON.parse(fs.readFileSync(SETTINGS_F, 'utf8'));
-    } catch (_) {}
+    } catch (e) { logError('APP', `Failed to load settings: ${e.message}`); }
     return {};
 }
 function saveSettings(s) {
-    fs.writeFileSync(SETTINGS_F, JSON.stringify(s, null, 2));
+    try { fs.writeFileSync(SETTINGS_F, JSON.stringify(s, null, 2)); }
+    catch (e) { logError('APP', `Failed to save settings: ${e.message}`); }
 }
 
 // ── Main window ───────────────────────────────────────────────────────────────
-let mainWin;
-
 function createMainWindow() {
     mainWin = new BrowserWindow({
-        width:  980,
-        height: 820,
-        minWidth:  760,
-        minHeight: 600,
+        width:  1060,
+        height: 860,
+        minWidth:  800,
+        minHeight: 640,
         backgroundColor: '#0f0f1a',
         titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
         webPreferences: {
@@ -42,32 +109,27 @@ function createMainWindow() {
     });
 
     mainWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+    mainWin.webContents.on('did-finish-load', () => {
+        logInfo('APP', `Media Journal Sync started. Log dir: ${LOG_DIR}`);
+        logInfo('APP', `Settings file: ${SETTINGS_F}`);
+    });
 }
 
-// ── Spoof a real Chrome user agent so sites render normally ──────────────────
-// Electron's default UA contains "Electron" which triggers bot detection and
-// causes sites like Letterboxd to serve a stripped-down fallback page.
+// ── UA spoof ──────────────────────────────────────────────────────────────────
 const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
 app.whenReady().then(() => {
-    // Set it globally for all sessions
     const { session } = require('electron');
     session.defaultSession.setUserAgent(CHROME_UA);
-    // Also set it on the persistent scraper session
     session.fromPartition('persist:scraper').setUserAgent(CHROME_UA);
     createMainWindow();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow(); });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// SCRAPING  — each site gets a hidden BrowserWindow that loads the real page,
-//             so sessions/cookies work exactly like a normal browser visit.
-// ══════════════════════════════════════════════════════════════════════════════
-
-// Load config once
+// ── Load config ───────────────────────────────────────────────────────────────
 const { SITE_CONFIGS } = (() => {
-    // config.js uses a global const — eval it to get the array
     const src = fs.readFileSync(path.join(__dirname, 'config.js'), 'utf8')
         .replace(/if\s*\(typeof module.*\}\s*$/s, '');
     const fn = new Function(`${src}; return SITE_CONFIGS;`);
@@ -76,12 +138,13 @@ const { SITE_CONFIGS } = (() => {
 
 ipcMain.handle('get-configs', () => SITE_CONFIGS);
 
-/**
- * Scrape a single site.
- * Opens a hidden BrowserWindow, navigates to the diary URL,
- * injects SITE_CONFIG + scraper.js, returns the result.
- */
+// ══════════════════════════════════════════════════════════════════════════════
+// SCRAPING
+// ══════════════════════════════════════════════════════════════════════════════
+
 ipcMain.handle('scrape-site', async (event, { config, url }) => {
+    logInfo(config.name, `Starting scrape → ${url}`);
+
     return new Promise((resolve) => {
         const win = new BrowserWindow({
             show: false,
@@ -92,68 +155,132 @@ ipcMain.handle('scrape-site', async (event, { config, url }) => {
             }
         });
 
-        // Ensure the correct UA is set on this window's session
         win.webContents.setUserAgent(CHROME_UA);
 
+        // Forward console.log from the scraper page to our log system
+        win.webContents.on('console-message', (e, level, message) => {
+            logDebug(config.name, `[page console] ${message}`);
+        });
+
         const timeout = setTimeout(() => {
+            logError(config.name, 'Scrape timed out after 30s');
             win.destroy();
             resolve({ error: 'Timed out waiting for page to load.' });
         }, 30000);
 
+        win.webContents.on('did-start-loading', () => {
+            logInfo(config.name, 'Page loading started…');
+        });
+
+        win.webContents.on('did-navigate', (e, navUrl) => {
+            logInfo(config.name, `Navigated to: ${navUrl}`);
+        });
+
         win.webContents.on('did-finish-load', async () => {
+            logInfo(config.name, 'Page loaded. Injecting scraper…');
             clearTimeout(timeout);
             try {
-                // Inject config then run scraper
+                // Wait for dynamic content if site needs it (React / SPA)
+                if (config.waitForSelector) {
+                    logInfo(config.name, 'Waiting for selector: ' + config.waitForSelector);
+                    const appeared = await win.webContents.executeJavaScript(`
+                        new Promise((resolve) => {
+                            const sel = ${JSON.stringify(config.waitForSelector)};
+                            if (document.querySelector(sel)) { resolve(true); return; }
+                            let tries = 0;
+                            const iv = setInterval(() => {
+                                if (document.querySelector(sel)) { clearInterval(iv); resolve(true); }
+                                else if (++tries >= 40) { clearInterval(iv); resolve(false); }
+                            }, 250);
+                        })
+                    `);
+                    logInfo(config.name, appeared
+                        ? 'Selector appeared. Proceeding.'
+                        : 'WARNING: selector never appeared after 10s — page may not have rendered.');
+                }
+
+                // CRITICAL: scraper.js is already an async IIFE returning a Promise.
+                // Do NOT wrap in another function — the return value will be lost.
                 await win.webContents.executeJavaScript(
                     `var SITE_CONFIG = ${JSON.stringify(config)};`
                 );
-                const result = await win.webContents.executeJavaScript(
-                    `(async () => { ${SCRAPER_SRC} })()`
-                );
+                const result = await win.webContents.executeJavaScript(SCRAPER_SRC);
+
+                // Forward every scraper debug log line to our log system
+                if (result && result.debugLogs) {
+                    result.debugLogs.forEach(line => {
+                        log('SCRAPER', config.name, line);
+                    });
+                }
+
+                if (result && result.error) {
+                    logError(config.name, `Scraper reported error: ${result.error}`);
+                } else if (result && result.title) {
+                    logInfo(config.name, `✓ Extracted: title="${result.title}" date="${result.date}" rating="${result.rating}" year="${result.year || ''}" platform="${result.platform || ''}"`);
+                    logInfo(config.name, `  Poster URL: ${result.poster || '(none)'}`);
+                } else {
+                    logWarn(config.name, 'Scraper returned empty result (no title found)');
+                    logWarn(config.name, `Full result: ${JSON.stringify(result)}`);
+                }
+
                 win.destroy();
                 resolve(result || { error: 'Scraper returned no result.' });
+
             } catch (err) {
+                logError(config.name, `JavaScript execution error: ${err.message}`);
+                logError(config.name, err.stack || '(no stack)');
                 win.destroy();
                 resolve({ error: err.message });
             }
         });
 
-        win.webContents.on('did-fail-load', (e, code, desc) => {
+        win.webContents.on('did-fail-load', (e, code, desc, validatedUrl) => {
+            logError(config.name, `Page failed to load: ${desc} (code ${code}) url=${validatedUrl}`);
             clearTimeout(timeout);
             win.destroy();
             resolve({ error: `Page failed to load: ${desc} (${code})` });
         });
 
+        win.webContents.on('did-navigate-in-page', (e, navUrl) => {
+            logDebug(config.name, `In-page navigation: ${navUrl}`);
+        });
+
+        logInfo(config.name, `Loading URL: ${url}`);
         win.loadURL(url);
     });
 });
 
-// ── Open a site in a visible window so the user can log in ───────────────────
+// ── Login window ──────────────────────────────────────────────────────────────
 ipcMain.handle('open-login-window', async (event, { url, siteName }) => {
+    logInfo(siteName, `Opening login window → ${url}`);
     const win = new BrowserWindow({
         width:  1100,
         height: 800,
         title:  `Log in to ${siteName} — close when done`,
-        webPreferences: {
-            partition: 'persist:scraper'
-        }
+        webPreferences: { partition: 'persist:scraper' }
     });
     win.webContents.setUserAgent(CHROME_UA);
+    win.on('closed', () => logInfo(siteName, 'Login window closed'));
     win.loadURL(url);
     return true;
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// FILE SAVE  — download image + write CSV
+// FILE SAVE
 // ══════════════════════════════════════════════════════════════════════════════
 
 ipcMain.handle('save-image', async (event, { imageUrl, destPath }) => {
-    if (!imageUrl) return { skipped: true };
+    if (!imageUrl) {
+        logWarn('APP', `save-image skipped — no imageUrl provided (destPath: ${destPath})`);
+        return { skipped: true };
+    }
 
-    // destPath is relative to the user-configured base folder
-    const settings   = loadSettings();
-    const baseFolder  = settings.imageBaseFolder || app.getPath('downloads');
-    const fullPath    = path.join(baseFolder, destPath);
+    const settings  = loadSettings();
+    const baseFolder = settings.imageBaseFolder || app.getPath('downloads');
+    const fullPath   = path.join(baseFolder, destPath);
+
+    logInfo('APP', `Saving image → ${fullPath}`);
+    logDebug('APP', `  Source URL: ${imageUrl}`);
 
     try {
         fs.mkdirSync(path.dirname(fullPath), { recursive: true });
@@ -162,47 +289,57 @@ ipcMain.handle('save-image', async (event, { imageUrl, destPath }) => {
             const proto = imageUrl.startsWith('https') ? https : http;
             const file  = fs.createWriteStream(fullPath);
             proto.get(imageUrl, res => {
+                logDebug('APP', `  HTTP ${res.statusCode} from image server`);
                 res.pipe(file);
                 file.on('finish', () => { file.close(); resolve(); });
             }).on('error', err => {
+                logError('APP', `  Image download failed: ${err.message}`);
                 fs.unlink(fullPath, () => {});
                 reject(err);
             });
         });
 
+        logInfo('APP', `  ✓ Image saved (${fullPath})`);
         return { success: true, fullPath };
     } catch (err) {
+        logError('APP', `save-image error: ${err.message}`);
         return { error: err.message };
     }
 });
 
 ipcMain.handle('append-csv', async (event, { config, entry }) => {
-    const settings    = loadSettings();
-    const baseFolder  = settings.imageBaseFolder || app.getPath('downloads');
-    const csvPath     = path.join(baseFolder, config.filename);
+    const settings  = loadSettings();
+    const baseFolder = settings.imageBaseFolder || app.getPath('downloads');
+    const csvPath    = path.join(baseFolder, config.filename);
 
-    const fields  = config.csvFields || [];
-    const row     = fields.map(f => `"${(entry[f] || '').toString().replace(/"/g, '""')}"`).join(',');
+    logInfo(config.name, `Appending to CSV → ${csvPath}`);
 
-    // Write header if file is new
+    const fields = config.csvFields || [];
+    const row    = fields.map(f => `"${(entry[f] || '').toString().replace(/"/g, '""')}"`).join(',');
+
     if (!fs.existsSync(csvPath)) {
         fs.mkdirSync(path.dirname(csvPath), { recursive: true });
         fs.writeFileSync(csvPath, config.csvHeaders + '\n');
+        logInfo(config.name, '  CSV file created with headers');
     }
 
-    // Duplicate check: scan existing lines for same title+date
     const existing = fs.readFileSync(csvPath, 'utf8');
-    const lines    = existing.split('\n').slice(1).filter(Boolean); // skip header
+    const lines    = existing.split('\n').slice(1).filter(Boolean);
     const titleIdx = fields.indexOf('title');
     const dateIdx  = fields.indexOf('date');
     const isDupe   = lines.some(line => {
         const cols = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
         return cols[titleIdx]?.toLowerCase() === (entry.title || '').toLowerCase() &&
-               cols[dateIdx]  === (entry.date  || '');
+               cols[dateIdx] === (entry.date || '');
     });
 
-    if (isDupe) return { skipped: true };
+    if (isDupe) {
+        logWarn(config.name, `  Duplicate detected — skipping CSV row for "${entry.title}"`);
+        return { skipped: true };
+    }
+
     fs.appendFileSync(csvPath, row + '\n');
+    logInfo(config.name, `  ✓ Row appended: ${row}`);
     return { success: true };
 });
 
@@ -213,52 +350,71 @@ ipcMain.handle('append-csv', async (event, { config, entry }) => {
 ipcMain.handle('sync-sheets', async (event, { entry, config }) => {
     const settings  = loadSettings();
     const scriptUrl = settings.sheetsScriptUrl;
-    if (!scriptUrl) return { skipped: true };
+    if (!scriptUrl) {
+        logWarn(config.name, 'Sheets sync skipped — no script URL configured');
+        return { skipped: true };
+    }
 
     const tabNames = settings.sheetsTabNames || {};
-    const tabName  = tabNames[config.name]   || config.sheetTab;
+    const tabName  = tabNames[config.name] || config.sheetTab;
     const row      = (config.csvFields || []).map(f => entry[f] || '');
+
+    logInfo(config.name, `Syncing to Sheets tab "${tabName}": ${JSON.stringify(row)}`);
 
     try {
         const result = await postJSON(scriptUrl, { tab: tabName, row });
+        if (result.success && result.skipped) logWarn(config.name, '  Sheets: duplicate row, skipped');
+        else if (result.success)              logInfo(config.name, '  ✓ Sheets row appended');
+        else                                  logError(config.name, `  Sheets error: ${result.error}`);
         return result;
     } catch (err) {
+        logError(config.name, `  Sheets POST failed: ${err.message}`);
         return { error: err.message };
     }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GITHUB PUSH
+// GITHUB
 // ══════════════════════════════════════════════════════════════════════════════
 
-ipcMain.handle('git-push', async (event) => {
+ipcMain.handle('git-push', async () => {
     const settings = loadSettings();
     const repoPath = settings.gitRepoPath;
-    if (!repoPath) return { skipped: true, reason: 'No repo path configured.' };
+    if (!repoPath) {
+        logWarn('GIT', 'Git push skipped — no repo path configured');
+        return { skipped: true, reason: 'No repo path configured.' };
+    }
 
+    logInfo('GIT', `Running git add/commit/push in: ${repoPath}`);
     try {
-        const git = require('simple-git')(repoPath);
+        const git    = require('simple-git')(repoPath);
         await git.add('.');
         const status = await git.status();
-        if (status.files.length === 0) return { skipped: true, reason: 'Nothing to commit.' };
-
+        logInfo('GIT', `  ${status.files.length} file(s) changed`);
+        if (status.files.length === 0) {
+            logInfo('GIT', '  Nothing to commit');
+            return { skipped: true, reason: 'Nothing to commit.' };
+        }
         const date = new Date().toLocaleDateString('en-US');
         await git.commit(`Media journal update ${date}`);
+        logInfo('GIT', '  Committed. Pushing…');
         await git.push();
+        logInfo('GIT', '  ✓ Push complete');
         return { success: true };
     } catch (err) {
+        logError('GIT', `Git error: ${err.message}`);
         return { error: err.message };
     }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SETTINGS  IPC
+// SETTINGS IPC
 // ══════════════════════════════════════════════════════════════════════════════
 
-ipcMain.handle('load-settings', ()          => loadSettings());
-ipcMain.handle('save-settings', (e, s)      => { saveSettings(s); return true; });
-ipcMain.handle('open-folder',   (e, folder) => shell.openPath(folder));
-ipcMain.handle('choose-folder', async ()    => {
+ipcMain.handle('load-settings',  ()         => loadSettings());
+ipcMain.handle('save-settings',  (e, s)     => { saveSettings(s); return true; });
+ipcMain.handle('open-folder',    (e, folder) => shell.openPath(folder));
+ipcMain.handle('choose-folder',  async ()   => {
     const { dialog } = require('electron');
     const result = await dialog.showOpenDialog(mainWin, {
         properties: ['openDirectory', 'createDirectory']
@@ -266,7 +422,7 @@ ipcMain.handle('choose-folder', async ()    => {
     return result.canceled ? null : result.filePaths[0];
 });
 
-// ── Helper: POST JSON and return parsed response ──────────────────────────────
+// ── Helper ────────────────────────────────────────────────────────────────────
 function postJSON(url, body) {
     return new Promise((resolve, reject) => {
         const data   = JSON.stringify(body);

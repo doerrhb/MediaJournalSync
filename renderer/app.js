@@ -453,7 +453,7 @@ function computeImagePath(cfg, entry) {
     const subFolder  = cfg.folder;
     const safeTitle  = sanitizeFilename(entry.title || 'unknown');
     const suffix     = entry.year ? `_${entry.year}` : (entry.date ? `_${entry.date.replace(/\//g,'-')}` : '');
-    return `${subFolder}/${safeTitle}${suffix}.jpg`;
+    return `${subFolder}/${safeTitle}${suffix}.png`;
 }
 
 function setEntryState(siteName, state) {

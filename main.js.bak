@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, nativeTheme, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeTheme } = require('electron');
 const path  = require('path');
 const fs    = require('fs');
 const https = require('https');
@@ -159,11 +159,7 @@ ipcMain.handle('scrape-site', async (event, { config, url }) => {
 
         // Forward console.log from the scraper page to our log system
         win.webContents.on('console-message', (e, level, message) => {
-            // Suppress noisy but harmless browser warnings
-            const noise = /Third-party cookie|NitroAds|fun-hooks|Audigent|attribution-reporting|encryptedSignalProviders|googletag.setConfig|CORS policy/i;
-            if (!noise.test(message)) {
-                logDebug(config.name, `[page console] ${message}`);
-            }
+            logDebug(config.name, `[page console] ${message}`);
         });
 
         const timeout = setTimeout(() => {
@@ -184,31 +180,12 @@ ipcMain.handle('scrape-site', async (event, { config, url }) => {
             logInfo(config.name, 'Page loaded. Injecting scraper…');
             clearTimeout(timeout);
             try {
-                // Wait for dynamic content if site needs it (React / SPA)
-                if (config.waitForSelector) {
-                    logInfo(config.name, 'Waiting for selector: ' + config.waitForSelector);
-                    const appeared = await win.webContents.executeJavaScript(`
-                        new Promise((resolve) => {
-                            const sel = ${JSON.stringify(config.waitForSelector)};
-                            if (document.querySelector(sel)) { resolve(true); return; }
-                            let tries = 0;
-                            const iv = setInterval(() => {
-                                if (document.querySelector(sel)) { clearInterval(iv); resolve(true); }
-                                else if (++tries >= 40) { clearInterval(iv); resolve(false); }
-                            }, 250);
-                        })
-                    `);
-                    logInfo(config.name, appeared
-                        ? 'Selector appeared. Proceeding.'
-                        : 'WARNING: selector never appeared after 10s — page may not have rendered.');
-                }
-
-                // CRITICAL: scraper.js is already an async IIFE returning a Promise.
-                // Do NOT wrap in another function — the return value will be lost.
                 await win.webContents.executeJavaScript(
                     `var SITE_CONFIG = ${JSON.stringify(config)};`
                 );
-                const result = await win.webContents.executeJavaScript(SCRAPER_SRC);
+                const result = await win.webContents.executeJavaScript(
+                    `(async () => { ${SCRAPER_SRC} })()`
+                );
 
                 // Forward every scraper debug log line to our log system
                 if (result && result.debugLogs) {
@@ -220,13 +197,8 @@ ipcMain.handle('scrape-site', async (event, { config, url }) => {
                 if (result && result.error) {
                     logError(config.name, `Scraper reported error: ${result.error}`);
                 } else if (result && result.title) {
-                    // BGG: rating is Angular-rendered — do live 2nd page load
-                    if (config.name === 'BoardGameGeek' && result.detailUrl && !result.rating) {
-                        logInfo('BoardGameGeek', 'Phase 2: fetching rating from game page…');
-                        const bggRating = await loadBGGRating(result.detailUrl);
-                        if (bggRating) result.rating = bggRating;
-                    }
                     logInfo(config.name, `✓ Extracted: title="${result.title}" date="${result.date}" rating="${result.rating}" year="${result.year || ''}" platform="${result.platform || ''}"`);
+                    logInfo(config.name, `  Poster URL: ${result.poster || '(none)'}`);
                 } else {
                     logWarn(config.name, 'Scraper returned empty result (no title found)');
                     logWarn(config.name, `Full result: ${JSON.stringify(result)}`);
@@ -275,111 +247,8 @@ ipcMain.handle('open-login-window', async (event, { url, siteName }) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// BGG RATING — live Angular page load
-// The rating is Angular-rendered on the game's own page, not on the play log.
-// XPath confirmed: /html/body/div[2]/main/div[2]/div/div[2]/div[2]/ng-include/div/
-//                  ng-include/div/div[2]/div[2]/div[4]/span[1]/div/div/span[2]/span
+// FILE SAVE
 // ══════════════════════════════════════════════════════════════════════════════
-
-const BGG_RATING_XPATH = '/html/body/div[2]/main/div[2]/div/div[2]/div[2]/ng-include/div/ng-include/div/div[2]/div[2]/div[4]/span[1]/div/div/span[2]/span';
-
-async function loadBGGRating(gameUrl) {
-    logInfo('BoardGameGeek', `Loading game page for rating: ${gameUrl}`);
-    return new Promise((resolve) => {
-        const win = new BrowserWindow({
-            show: false,
-            webPreferences: { partition: 'persist:scraper', contextIsolation: false, nodeIntegration: false }
-        });
-        win.webContents.setUserAgent(CHROME_UA);
-
-        const timeout = setTimeout(() => {
-            logWarn('BoardGameGeek', 'Rating page timed out after 20s');
-            win.destroy();
-            resolve('');
-        }, 20000);
-
-        win.webContents.on('did-finish-load', async () => {
-            clearTimeout(timeout);
-            try {
-                // Poll for Angular to render the rating span (up to 10s / 40 tries)
-                const rating = await win.webContents.executeJavaScript(`
-                    new Promise(resolve => {
-                        const xpath = ${JSON.stringify(BGG_RATING_XPATH)};
-                        let tries = 0;
-                        const check = () => {
-                            try {
-                                const r = document.evaluate(xpath, document, null, XPathResult.STRING_TYPE, null);
-                                const text = (r.stringValue || '').trim().replace(/\\s+/g, '');
-                                if (text && !isNaN(parseFloat(text)) && parseFloat(text) > 0) {
-                                    resolve(text);
-                                    return;
-                                }
-                            } catch(e) {}
-                            if (++tries >= 40) { resolve(''); return; }
-                            setTimeout(check, 250);
-                        };
-                        check();
-                    })
-                `);
-                win.destroy();
-                if (rating) logInfo('BoardGameGeek', `  ✓ Rating from game page: ${rating}`);
-                else         logWarn('BoardGameGeek',  `  Rating span not found after 10s on game page`);
-                resolve(rating || '');
-            } catch(e) {
-                logError('BoardGameGeek', `Rating page JS error: ${e.message}`);
-                win.destroy();
-                resolve('');
-            }
-        });
-
-        win.webContents.on('did-fail-load', (e, code, desc) => {
-            logError('BoardGameGeek', `Rating page failed: ${desc} (${code})`);
-            clearTimeout(timeout);
-            win.destroy();
-            resolve('');
-        });
-
-        win.loadURL(gameUrl);
-    });
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// IMAGE NORMALIZATION
-// All saved posters are normalized to PNG at a consistent size:
-//   Portrait (h/w >= 1.2):  600 × 900  (standard movie/book/game poster)
-//   Near-square (0.85–1.2): 600 × 600
-//   Landscape (<0.85):      600 × 400  (rare — board game box art, etc.)
-// Source format (jpg, webp, gif, etc.) is always converted to PNG.
-// ══════════════════════════════════════════════════════════════════════════════
-
-function normalizeImageBuffer(rawBuffer) {
-    try {
-        const img = nativeImage.createFromBuffer(rawBuffer);
-        if (img.isEmpty()) {
-            logWarn('APP', '  Image normalize: could not decode buffer, saving as-is');
-            return rawBuffer;
-        }
-        const { width, height } = img.getSize();
-        if (width === 0 || height === 0) return img.toPNG();
-
-        const aspect = height / width;
-        let targetW;
-        if (aspect >= 1.2)       targetW = 600;  // portrait
-        else if (aspect <= 0.85) targetW = 600;  // landscape
-        else                     targetW = 600;  // near-square
-
-        const targetH = Math.round(targetW * aspect);
-        logDebug('APP', `  Image normalize: ${width}×${height} → ${targetW}×${targetH} PNG`);
-
-        const resized = img.resize({ width: targetW, height: targetH, quality: 'best' });
-        return resized.toPNG();
-    } catch(e) {
-        logError('APP', `  Image normalize error: ${e.message}`);
-        return rawBuffer;
-    }
-}
-
-
 
 ipcMain.handle('save-image', async (event, { imageUrl, destPath }) => {
     if (!imageUrl) {
@@ -387,13 +256,9 @@ ipcMain.handle('save-image', async (event, { imageUrl, destPath }) => {
         return { skipped: true };
     }
 
-    const settings   = loadSettings();
+    const settings  = loadSettings();
     const baseFolder = settings.imageBaseFolder || app.getPath('downloads');
-    logInfo('APP', `Image base folder: ${baseFolder} (from ${settings.imageBaseFolder ? 'settings' : 'default downloads'})`);
-
-    // Always save as .png regardless of source extension
-    const pngDestPath = destPath.replace(/\.(jpe?g|webp|gif|bmp|tiff?)$/i, '') + '.png';
-    const fullPath    = path.join(baseFolder, pngDestPath);
+    const fullPath   = path.join(baseFolder, destPath);
 
     logInfo('APP', `Saving image → ${fullPath}`);
     logDebug('APP', `  Source URL: ${imageUrl}`);
@@ -401,23 +266,21 @@ ipcMain.handle('save-image', async (event, { imageUrl, destPath }) => {
     try {
         fs.mkdirSync(path.dirname(fullPath), { recursive: true });
 
-        // Download raw bytes
-        const rawBuffer = await new Promise((resolve, reject) => {
+        await new Promise((resolve, reject) => {
             const proto = imageUrl.startsWith('https') ? https : http;
-            const chunks = [];
-            proto.get(imageUrl, { headers: { 'User-Agent': CHROME_UA } }, res => {
+            const file  = fs.createWriteStream(fullPath);
+            proto.get(imageUrl, res => {
                 logDebug('APP', `  HTTP ${res.statusCode} from image server`);
-                if (res.statusCode >= 400) { reject(new Error(`HTTP ${res.statusCode}`)); return; }
-                res.on('data', c => chunks.push(c));
-                res.on('end',  () => resolve(Buffer.concat(chunks)));
-            }).on('error', reject);
+                res.pipe(file);
+                file.on('finish', () => { file.close(); resolve(); });
+            }).on('error', err => {
+                logError('APP', `  Image download failed: ${err.message}`);
+                fs.unlink(fullPath, () => {});
+                reject(err);
+            });
         });
 
-        // Normalize: resize + convert to PNG
-        const pngBuffer = normalizeImageBuffer(rawBuffer);
-        fs.writeFileSync(fullPath, pngBuffer);
-
-        logInfo('APP', `  ✓ Image saved as PNG (${Math.round(pngBuffer.length/1024)}KB) → ${fullPath}`);
+        logInfo('APP', `  ✓ Image saved (${fullPath})`);
         return { success: true, fullPath };
     } catch (err) {
         logError('APP', `save-image error: ${err.message}`);

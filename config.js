@@ -1,22 +1,10 @@
-/*
-  Media Journal Sync - Configuration File
-
-  reviewFields defines what the review panel shows per site.
-  waitForSelector:     CSS selector to poll for before running scraper (React/SPA sites).
-  titleStripYear:      strip trailing " (YYYY)" from title after extraction.
-  dateFromParent:      walk up the DOM tree to find a date header above the card.
-  detailLinkSelector:  override which link is followed for detail-page fetching.
-*/
-
 const SITE_CONFIGS = [
     {
         name: "Letterboxd",
         urlPattern: "letterboxd.com",
         pathPattern: "/diary/",
-        // fetchDetail disabled — inline URL upscaling handles images reliably.
-        // The detail fetch was failing because Letterboxd lazy-loads poster JS.
-        fetchDetail: false,
-        titleStripYear: true,   // span.frame-title contains "Bloodsport (1988)" — strip year
+        fetchDetail: false,       // poster is IN the diary row — no detail fetch needed
+        titleStripYear: true,     // "Bloodsport (1988)" → title="Bloodsport" year="1988"
         sheetTab: "Movies",
         csvFields: ["title", "date", "rating", "year"],
         csvHeaders: "Movie Name,Date Watched,Rating,Year",
@@ -28,21 +16,18 @@ const SITE_CONFIGS = [
         ],
         selectors: {
             entryLink: 'a[href*="/film/"]',
-            // MUST be "tr" only. "div" in a multi-selector matches the inner div.film-poster
-            // BEFORE reaching the <tr>, making sibling td selectors for date/rating invisible.
             row: "tr",
-            // span.frame-title inside the poster div: "Bloodsport (1988)"
-            // titleStripYear trims the " (YYYY)" suffix
             title: "span.frame-title",
-            yearRegex: "\\b(19|20)\\d{2}\\b",
-            image: "img.image",
-            // Calendar td: <a href="/doerrhb/diary/for/2026/03/10/">
-            dateSelector: "td.td-calendar a",
+            // Date confirmed from DOM: <a class="daydate" href="/doerrhb/diary/films/for/2026/03/07/">07</a>
+            // normalizeDate() matches /for/YYYY/MM/DD/ in the href
+            dateSelector: "a.daydate",
             dateAttribute: "href",
-            dateParse: "letterboxd-href",
-            // Rating td: <span class="rating rated-8"> means 4 stars (rated-X / 2)
-            ratingSelector: "td.td-rating span.rating",
-            ratingParse: "letterboxd-class"
+            // Rating confirmed: <span class="rating rated-8"> in td.col-rating
+            ratingSelector: "td.col-rating span.rating",
+            ratingParse: "letterboxd-class",
+            // Poster confirmed in row DOM: <img class="image" src="a.ltrbxd.com/resized/sm/upload/...">
+            // getBestSrc picks up srcset 2x, upscaleImage converts to 1000×1500
+            image: "img.image"
         },
         filename: "letterboxd_movies.csv",
         folder: "Images/movies"
@@ -67,10 +52,8 @@ const SITE_CONFIGS = [
             yearRegex: "\\b(19|20)\\d{2}\\b",
             image: ".field.cover img",
             dateSelector: "td.field.date_read .date_row, td.field.date_read span",
-            dateParse: "text",
             ratingSelector: "td.field.rating span.staticStars, td.field.rating .stars",
             ratingAttribute: "data-rating",
-            ratingParse: "data-attr",
             detailImage: "img#coverImage, .EditionDetails img, #main-content img.book-cover"
         },
         filename: "goodreads_books.csv",
@@ -80,7 +63,8 @@ const SITE_CONFIGS = [
         name: "Backloggd",
         urlPattern: "backloggd.com",
         pathPattern: "/u/",
-        dateFromParent: true,   // date lives in a section/date heading above the game card
+        // Date: extractBackloggdDate() finds div.date-entry (day sibling) + div.month-year-date (month/year sibling)
+        // Rating: .stars-top style="width:90%" → 4.5 stars
         sheetTab: "Video Games",
         csvFields: ["title", "date", "rating", "platform"],
         csvHeaders: "Video Game Name,Date Played,Rating,Platform",
@@ -93,14 +77,7 @@ const SITE_CONFIGS = [
         selectors: {
             entryLink: 'a[href^="/games/"]:not([href*="/lib/"]):not([href*="/popular/"]):not([href*="/releases/"]):not([href*="/browse/"])',
             row: ".journal-entry, .card.game-cover, .game-card, .mx-auto.row",
-            yearRegex: "\\b(19|20)\\d{2}\\b",
             image: "img.card-img, img.game-cover",
-            // In-card date as fast path; dateFromParent walks up on miss
-            dateSelector: ".date, .journal-date, .played-date, time",
-            dateAttribute: "datetime",
-            dateParse: "datetime-or-text",
-            ratingSelector: ".user-rating, .game-rating, .stars-rating, .rating-display",
-            ratingParse: "text-or-class",
             platformSelector: 'a[href*="played_platform"]'
         },
         filename: "backloggd_games.csv",
@@ -111,6 +88,9 @@ const SITE_CONFIGS = [
         urlPattern: "boardgamegeek.com",
         pathPattern: "geekplay.php",
         fetchDetail: true,
+        // Date: extractBGGDate() scans preceding <tr> siblings for a[href*='/plays/bydate/']
+        // Rating: extractBGGRating() scans surrounding <tr> siblings for span[ng-show*="ratingitem.rating"]
+        waitForSelector: "main table tr a[href*='/boardgame/']",
         sheetTab: "Board Games",
         csvFields: ["title", "date", "rating"],
         csvHeaders: "Board Game Name,Date Played,Rating",
@@ -122,14 +102,8 @@ const SITE_CONFIGS = [
         selectors: {
             entryLink: 'main table a[href*="/boardgame/"]',
             row: "tr[id^='play_'], .collection_table tr, main table tr, tr",
-            yearRegex: "\\b(19|20)\\d{2}\\b",
-            image: "img.collection_thumbnail, img.thumbnail, img",
-            // BGG geekplay shows dates as ISO "2026-03-10" — scan row text with regex
-            dateRegex: "\\b\\d{4}-\\d{2}-\\d{2}\\b",
-            // User's personal rating column (rightmost numeric cell)
-            ratingSelector: "td.collection_yourrating, td.col_yourrating",
-            ratingParse: "text-numeric",
-            detailImage: ".game-header-image-container img, img.img-responsive, img[src*='cf.geekdo-images.com']"
+            image: "img",
+            detailImage: ".game-header-image-container img, img[src*='cf.geekdo-images.com/'][src*='pic']"
         },
         filename: "bgg_plays.csv",
         folder: "Images/boardgames"
@@ -139,7 +113,9 @@ const SITE_CONFIGS = [
         urlPattern: "serializd.com",
         pathPattern: "/user/",
         fetchDetail: true,
-        dateFromParent: true,   // date may be in a heading above the diary entry card
+        // Date: extractSerializdDate() walks ancestors for short date text near the diary entry
+        // Falls back to <time> element or JSON-LD on detail page
+        waitForSelector: 'a[href*="/show/"]',
         sheetTab: "TV Shows",
         csvFields: ["title", "date", "rating"],
         csvHeaders: "TV Show Name,Date Watched,Rating",
@@ -148,29 +124,18 @@ const SITE_CONFIGS = [
             { key: "date",   label: "Date Watched",  placeholder: "M/D/YYYY", required: false, width: "half" },
             { key: "rating", label: "Rating (★/5)",  placeholder: "e.g. 5",   required: false, width: "half" }
         ],
-        // React SPA — wait for diary entries to render
-        waitForSelector: 'a[href*="/show/"]',
         selectors: {
             entryLink: 'a[href*="/show/"]',
             row: ".diary-log, .diary-entry, div[class*='diary']",
             title: "h2",
             subtitle: ".small-text",
-            yearRegex: "\\b(19|20)\\d{2}\\b",
-            image: "img[alt*='Poster'], img[alt*='poster'], img",
-            // Right-hand side of the space-between flex container holds the date
-            dateSelector: "div[style*='justify-content: space-between'] > div:last-child, div[style*='flex-direction: row'] > div:last-child",
-            dateParse: "text",
-            // Rating: handled by SVG star counting in scraper.js (no class selector available)
-            ratingSelector: null,
-            // For detail fetch: follow the review link that wraps the whole entry
+            image: "img",
             detailLinkSelector: "a[href*='/review/']",
-            detailImage: "img[alt*='Poster'], img[src*='tmdb'], .poster img"
+            detailImage: "img[alt*='Poster'], img[src*='tmdb'], img[src*='serializd-tmdb']"
         },
         filename: "serializd_shows.csv",
         folder: "Images/tvshows"
     }
 ];
 
-if (typeof module !== 'undefined') {
-    module.exports = SITE_CONFIGS;
-}
+if (typeof module !== 'undefined') module.exports = SITE_CONFIGS;

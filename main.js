@@ -590,7 +590,7 @@ ipcMain.handle('save-image', async (event, { imageUrl, destPath }) => {
     logInfo('APP', `Image base folder: ${baseFolder} (from ${settings.imageBaseFolder ? 'settings' : 'default downloads'})`);
 
     // Always save as .png regardless of source extension
-    const pngDestPath = destPath.replace(/\.(jpe?g|webp|gif|bmp|tiff?)$/i, '') + '.png';
+    const pngDestPath = destPath.replace(/\.(jpe?g|png|webp|gif|bmp|tiff?)$/i, '') + '.png';
     const fullPath    = path.join(baseFolder, pngDestPath);
 
     logInfo('APP', `Saving image → ${fullPath}`);
@@ -825,24 +825,57 @@ function getFollowRedirects(url, maxRedirects = 6) {
 
 function postJSON(url, body) {
     return new Promise((resolve, reject) => {
-        const data   = JSON.stringify(body);
-        const parsed = new URL(url);
-        const proto  = parsed.protocol === 'https:' ? https : http;
-        const req    = proto.request({
-            hostname: parsed.hostname,
-            path:     parsed.pathname + parsed.search,
-            method:   'POST',
-            headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
-        }, res => {
-            let raw = '';
-            res.on('data', c => { raw += c; });
-            res.on('end', () => {
-                try { resolve(JSON.parse(raw)); }
-                catch { resolve({ raw }); }
+        const data = JSON.stringify(body);
+
+        function doPost(currentUrl, isRetry) {
+            const parsed = new URL(currentUrl);
+            const proto  = parsed.protocol === 'https:' ? https : http;
+
+            // After a redirect, Apps Script wants a GET, not another POST
+            if (isRetry) {
+                const req = proto.get(currentUrl, { headers: { 'User-Agent': CHROME_UA } }, res => {
+                    let raw = '';
+                    res.on('data', c => { raw += c; });
+                    res.on('end', () => {
+                        try { resolve(JSON.parse(raw)); }
+                        catch { resolve({ raw }); }
+                    });
+                });
+                req.on('error', reject);
+                return;
+            }
+
+            const req = proto.request({
+                hostname: parsed.hostname,
+                path:     parsed.pathname + parsed.search,
+                method:   'POST',
+                headers:  {
+                    'Content-Type':   'application/json',
+                    'Content-Length': Buffer.byteLength(data),
+                    'User-Agent':     CHROME_UA
+                }
+            }, res => {
+                // Follow the redirect with a GET (standard POST→302→GET browser behavior)
+                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    res.resume();
+                    const next = res.headers.location.startsWith('http')
+                        ? res.headers.location
+                        : new URL(res.headers.location, currentUrl).href;
+                    return doPost(next, true);
+                }
+                let raw = '';
+                res.on('data', c => { raw += c; });
+                res.on('end', () => {
+                    try { resolve(JSON.parse(raw)); }
+                    catch { resolve({ raw }); }
+                });
             });
-        });
-        req.on('error', reject);
-        req.write(data);
-        req.end();
+            req.on('error', reject);
+            req.setTimeout(15000, () => { req.destroy(); reject(new Error('postJSON timeout')); });
+            req.write(data);
+            req.end();
+        }
+
+        doPost(url, false);
     });
 }

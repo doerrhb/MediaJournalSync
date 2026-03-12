@@ -623,40 +623,9 @@ ipcMain.handle('save-image', async (event, { imageUrl, destPath }) => {
     }
 });
 
-ipcMain.handle('append-csv', async (event, { config, entry }) => {
-    const settings  = loadSettings();
-    const baseFolder = settings.imageBaseFolder || app.getPath('downloads');
-    const csvPath    = path.join(baseFolder, config.filename);
-
-    logInfo(config.name, `Appending to CSV → ${csvPath}`);
-
-    const fields = config.csvFields || [];
-    const row    = fields.map(f => `"${(entry[f] || '').toString().replace(/"/g, '""')}"`).join(',');
-
-    if (!fs.existsSync(csvPath)) {
-        fs.mkdirSync(path.dirname(csvPath), { recursive: true });
-        fs.writeFileSync(csvPath, config.csvHeaders + '\n');
-        logInfo(config.name, '  CSV file created with headers');
-    }
-
-    const existing = fs.readFileSync(csvPath, 'utf8');
-    const lines    = existing.split('\n').slice(1).filter(Boolean);
-    const titleIdx = fields.indexOf('title');
-    const dateIdx  = fields.indexOf('date');
-    const isDupe   = lines.some(line => {
-        const cols = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
-        return cols[titleIdx]?.toLowerCase() === (entry.title || '').toLowerCase() &&
-               cols[dateIdx] === (entry.date || '');
-    });
-
-    if (isDupe) {
-        logWarn(config.name, `  Duplicate detected — skipping CSV row for "${entry.title}"`);
-        return { skipped: true };
-    }
-
-    fs.appendFileSync(csvPath, row + '\n');
-    logInfo(config.name, `  ✓ Row appended: ${row}`);
-    return { success: true };
+ipcMain.handle('append-csv', async () => {
+    // CSV writing removed — Google Sheets is the sole data store
+    return { skipped: true, reason: 'csv_disabled' };
 });
 
 // ══════════════════════════════════════════════════════════════════════════════

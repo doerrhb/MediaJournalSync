@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('api', {
     loadSettings:     ()       => ipcRenderer.invoke('load-settings'),
     saveSettings:     (s)      => ipcRenderer.invoke('save-settings', s),
     openFolder:       (f)      => ipcRenderer.invoke('open-folder', f),
+    openUrl:          (u)      => ipcRenderer.invoke('open-url', u),
     chooseFolder:     ()       => ipcRenderer.invoke('choose-folder'),
     getLogDir:        ()       => ipcRenderer.invoke('get-log-dir'),
     getTodayLog:      ()       => ipcRenderer.invoke('get-today-log'),

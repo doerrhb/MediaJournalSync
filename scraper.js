@@ -527,7 +527,9 @@
 
     let poster = null;
 
-    // ── Letterboxd: try local row image first; only hit detail page if it's a placeholder ──
+    // ── Letterboxd: skip in-page fetch (React renders posters client-side, fetch returns skeleton HTML).
+    // Read the local img.image for display in the review card if available, but ALWAYS
+    // pass filmUrl back to main.js so Phase 2 can fetch the canonical film page in a real browser.
     if (config.name === 'Letterboxd' && selectors.image) {
         const img = row.querySelector(selectors.image);
         if (img) {
@@ -536,16 +538,17 @@
                 if (!src.startsWith('http')) src = new URL(src, window.location.href).href;
                 if (!isInvalidImage(src)) {
                     poster = upscaleImage(src);
-                    log(`Local poster: ${poster}`);
+                    log(`Local poster (preview only, Phase 2 will upgrade): ${poster}`);
                 } else {
-                    log(`Local image invalid/placeholder: ${src}`);
+                    log(`Local image placeholder: ${src} — Phase 2 will fetch real poster`);
                 }
             }
         }
-        if (!poster) log(`Image selector '${selectors.image}' returned nothing.`);
+        // Do NOT log "returned nothing" as an error — Phase 2 handles it
     }
 
-    if (config.fetchDetail && !poster && first && first.href) {
+    // ── fetchDetail for all sites EXCEPT Letterboxd (which uses Phase 2 real browser in main.js) ──
+    if (config.fetchDetail && !poster && first && first.href && config.name !== 'Letterboxd') {
         let detailLink = first;
         if (selectors.detailLinkSelector) {
             const alt = row.querySelector(selectors.detailLinkSelector);
@@ -649,12 +652,24 @@
 
     if (poster && !poster.startsWith('data:')) poster = upscaleImage(poster);
 
-    // detailUrl: for BGG, main.js will do a live Angular page load to get rating
+    // detailUrl: for BGG, main.js does a live Angular page load to get rating
     const detailUrl = (config.name === 'BoardGameGeek' && first) ? first.href : null;
 
-    log(`RESULT: title="${title}" date="${date}" rating="${rating}" year="${year}" platform="${platform}"`);
-    log(`RESULT: poster=${poster || '(none)'}`);
+    // filmUrl: for Letterboxd, main.js Phase 2 loads the canonical film page in a real
+    // Electron browser window (React-rendered posters). ALWAYS set this.
+    let filmUrl = null;
+    if (config.name === 'Letterboxd' && first) {
+        try {
+            const rawHref = String(first.href || '');
+            const m = rawHref.match(/(letterboxd\.com\/)(?:[^\/]+\/)(film\/[^\/]+\/?)/ );
+            filmUrl = m ? ('https://' + m[1] + m[2]) : rawHref;
+            log('filmUrl for Phase 2: ' + filmUrl);
+        } catch(e) { log('filmUrl error: ' + String(e)); }
+    }
 
-    return { title, year, date, rating, platform, poster, detailUrl, debugLogs: logs };
+    log(`RESULT: title="${title}" date="${date}" rating="${rating}" year="${year}" platform="${platform}"`);
+    log(`RESULT: poster=${poster || '(none)'}${filmUrl ? ' filmUrl=' + filmUrl : ''}`);
+
+    return { title, year, date, rating, platform, poster, detailUrl, filmUrl, debugLogs: logs };
 
 })();

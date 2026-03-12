@@ -226,6 +226,33 @@ ipcMain.handle('scrape-site', async (event, { config, url }) => {
                         const bggRating = await loadBGGRating(result.detailUrl);
                         if (bggRating) result.rating = bggRating;
                     }
+
+                    // Letterboxd: in-page fetch() always returns skeleton HTML (React page).
+                    // Phase 2 = real browser load. Always try, regardless of what the scraper returned.
+                    if (config.name === 'Letterboxd') {
+                        const filmUrl = result.filmUrl || null;
+                        if (!filmUrl) {
+                            logWarn('Letterboxd', 'No filmUrl returned from scraper — cannot fetch poster');
+                        } else if (!result.poster) {
+                            logInfo('Letterboxd', `Phase 2: fetching poster for ${filmUrl}…`);
+                            // Fast path: static fetch from main process → OG meta tag
+                            const ogPoster = await fetchLBPosterStatic(filmUrl);
+                            if (ogPoster) {
+                                result.poster = ogPoster;
+                                logInfo('Letterboxd', `  ✓ Poster from static OG fetch: ${ogPoster}`);
+                            } else {
+                                // Slow path: real browser window + React rendering
+                                logInfo('Letterboxd', `  Static fetch failed, trying real browser…`);
+                                const lbPoster = await loadLBPoster(filmUrl);
+                                if (lbPoster) {
+                                    result.poster = lbPoster;
+                                    logInfo('Letterboxd', `  ✓ Poster from browser render: ${lbPoster}`);
+                                } else {
+                                    logWarn('Letterboxd', '  All poster methods failed — user can paste URL manually in review card');
+                                }
+                            }
+                        }
+                    }
                     logInfo(config.name, `✓ Extracted: title="${result.title}" date="${result.date}" rating="${result.rating}" year="${result.year || ''}" platform="${result.platform || ''}"`);
                 } else {
                     logWarn(config.name, 'Scraper returned empty result (no title found)');
@@ -340,6 +367,151 @@ async function loadBGGRating(gameUrl) {
         });
 
         win.loadURL(gameUrl);
+    });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LETTERBOXD POSTER — Fast path: static HTTPS fetch from main process
+// Letterboxd's film detail page includes og:image in the initial static HTML.
+// This is faster than a full browser render and doesn't require waiting for React.
+// ══════════════════════════════════════════════════════════════════════════════
+
+function fetchLBPosterStatic(filmUrl) {
+    return new Promise((resolve) => {
+        const options = {
+            headers: {
+                'User-Agent': CHROME_UA,
+                'Accept': 'text/html,application/xhtml+xml',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Cache-Control': 'no-cache'
+            }
+        };
+        logInfo('Letterboxd', `  Static fetch: ${filmUrl}`);
+
+        const req = https.get(filmUrl, options, (res) => {
+            // Follow redirects
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                logInfo('Letterboxd', `  Redirect → ${res.headers.location}`);
+                fetchLBPosterStatic(res.headers.location).then(resolve);
+                return;
+            }
+            if (res.statusCode !== 200) {
+                logWarn('Letterboxd', `  Static fetch HTTP ${res.statusCode}`);
+                resolve('');
+                return;
+            }
+            let html = '';
+            res.on('data', chunk => { html += chunk; if (html.length > 80000) req.destroy(); });
+            res.on('end', () => {
+                // Extract og:image content from raw HTML — fast regex, no DOM parsing needed
+                const match = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+                           || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+                if (match && match[1]) {
+                    const url = match[1];
+                    // Reject backdrops/landscape crops (LB OG on film pages IS the poster, but double-check)
+                    const isBackdrop = /-1200-.*-675-/i.test(url) || /backdrop/i.test(url);
+                    if (!isBackdrop) { resolve(url); return; }
+                }
+                // Also try the film-poster img src in raw HTML
+                const imgMatch = html.match(/class="film-poster[^>]*>[\s\S]*?<img[^>]+src=["']([^"']+)["']/i);
+                if (imgMatch && imgMatch[1] && !imgMatch[1].includes('empty-poster')) {
+                    resolve(imgMatch[1]);
+                    return;
+                }
+                logInfo('Letterboxd', '  No poster in static HTML');
+                resolve('');
+            });
+            res.on('error', (e) => { logWarn('Letterboxd', `  Static fetch error: ${e.message}`); resolve(''); });
+        });
+        req.on('error', (e) => { logWarn('Letterboxd', `  Static fetch request error: ${e.message}`); resolve(''); });
+        req.setTimeout(8000, () => { logWarn('Letterboxd', '  Static fetch timeout'); req.destroy(); resolve(''); });
+    });
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LETTERBOXD POSTER — Phase 2 real browser load
+// fetch() inside the page context is blocked by Letterboxd anti-bot.
+// This loads the canonical film page in a hidden Electron window and waits
+// for the .film-poster img element to resolve its src.
+// ══════════════════════════════════════════════════════════════════════════════
+
+async function loadLBPoster(filmUrl) {
+    logInfo('Letterboxd', `Phase 2: loading ${filmUrl}`);
+    return new Promise((resolve) => {
+        const win = new BrowserWindow({
+            show: false,
+            webPreferences: { partition: 'persist:scraper', contextIsolation: false, nodeIntegration: false }
+        });
+        win.webContents.setUserAgent(CHROME_UA);
+
+        const timeout = setTimeout(() => {
+            logWarn('Letterboxd', 'Poster page timed out after 20s');
+            win.destroy();
+            resolve('');
+        }, 20000);
+
+        win.webContents.on('did-finish-load', async () => {
+            clearTimeout(timeout);
+            try {
+                // Poll up to 8s for .film-poster img to have a real src
+                const posterUrl = await win.webContents.executeJavaScript(`
+                    new Promise(resolve => {
+                        let tries = 0;
+                        const check = () => {
+                            // Try multiple selectors in priority order
+                            const selectors = [
+                                '.film-poster img',
+                                '#film-poster img',
+                                'section.poster-container img',
+                                'div[data-film-poster] img',
+                                'img[src*="a.ltrbxd.com/resized/film-poster"]'
+                            ];
+                            for (const sel of selectors) {
+                                const img = document.querySelector(sel);
+                                if (img) {
+                                    // Prefer currentSrc (resolved), then src property
+                                    const url = img.currentSrc || img.src || img.getAttribute('src') || '';
+                                    const isPlaceholder = /empty-poster|placeholder|spacer|pixel|s\.ltrbxd\.com\/static\/img/i.test(url);
+                                    if (url && url.startsWith('http') && !isPlaceholder) {
+                                        resolve(url);
+                                        return;
+                                    }
+                                }
+                            }
+                            // Also try srcset on any ltrbxd image
+                            const lbImg = document.querySelector('img[srcset*="a.ltrbxd.com"]');
+                            if (lbImg) {
+                                const ss = lbImg.srcset || lbImg.getAttribute('srcset') || '';
+                                const parts = ss.split(',').map(s => s.trim().split(' ')[0]).filter(Boolean);
+                                if (parts.length) { resolve(parts[parts.length - 1]); return; }
+                                const s = lbImg.currentSrc || lbImg.src || '';
+                                if (s && !s.includes('empty-poster')) { resolve(s); return; }
+                            }
+                            if (++tries >= 32) { resolve(''); return; }
+                            setTimeout(check, 250);
+                        };
+                        check();
+                    })
+                `);
+                win.destroy();
+                if (posterUrl) resolve(posterUrl);
+                else { logWarn('Letterboxd', '  No .film-poster img found after 8s'); resolve(''); }
+            } catch(e) {
+                logError('Letterboxd', `Poster page JS error: ${e.message}`);
+                win.destroy();
+                resolve('');
+            }
+        });
+
+        win.webContents.on('did-fail-load', (e, code, desc) => {
+            logWarn('Letterboxd', `Poster page failed to load: ${desc} (${code})`);
+            clearTimeout(timeout);
+            win.destroy();
+            resolve('');
+        });
+
+        win.loadURL(filmUrl);
     });
 }
 
@@ -611,6 +783,7 @@ ipcMain.handle('git-push', async () => {
 ipcMain.handle('load-settings',  ()         => loadSettings());
 ipcMain.handle('save-settings',  (e, s)     => { saveSettings(s); return true; });
 ipcMain.handle('open-folder',    (e, folder) => shell.openPath(folder));
+ipcMain.handle('open-url',        (e, url)    => shell.openExternal(url));
 ipcMain.handle('choose-folder',  async ()   => {
     const { dialog } = require('electron');
     const result = await dialog.showOpenDialog(mainWin, {

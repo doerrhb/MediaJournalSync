@@ -500,6 +500,37 @@ function buildReviewCards(configs) {
             });
         });
 
+        // No-poster: open-in-browser button
+        const findBtn = card.querySelector('.find-poster-btn');
+        if (findBtn) {
+            findBtn.addEventListener('click', () => {
+                window.api.openUrl(findBtn.dataset.url);
+            });
+        }
+
+        // No-poster: paste URL and apply
+        const pasteBtn = card.querySelector('.poster-url-set');
+        const pasteInput = card.querySelector('.poster-url-input');
+        if (pasteBtn && pasteInput) {
+            pasteBtn.addEventListener('click', () => {
+                const url = pasteInput.value.trim();
+                if (!url) return;
+                scanResults[cfg.name] = Object.assign({}, scanResults[cfg.name], { poster: url });
+                // Replace the no-poster div with an actual image
+                const noposter = card.querySelector('.no-img');
+                if (noposter) {
+                    const imgEl = document.createElement('img');
+                    imgEl.src = url;
+                    imgEl.alt = 'Cover';
+                    imgEl.loading = 'lazy';
+                    imgEl.style.width = '110px';
+                    noposter.parentNode.replaceChild(imgEl, noposter);
+                }
+                pasteBtn.textContent = '✓ Set!';
+                pasteBtn.style.background = '#1a5a1a';
+            });
+        }
+
         const img = card.querySelector('.ec-poster img');
         if (img) {
             img.addEventListener('load', () => {
@@ -512,14 +543,26 @@ function buildReviewCards(configs) {
                 badge.style.display = 'block';
             });
         }
+
     });
 }
 
 function buildCardHTML(cfg, entry, dupInfo) {
     const tabName    = ((settings.sheetsTabNames || {})[cfg.name]) || cfg.sheetTab;
+    const filmSearchUrl = entry.filmUrl || (cfg.name === 'Letterboxd' && entry.title
+        ? `https://letterboxd.com/search/${encodeURIComponent(entry.title)}/`
+        : null);
     const posterHTML = entry.poster
         ? `<img src="${entry.poster}" alt="Cover" loading="lazy"><div class="qual-badge" style="display:none;"></div>`
-        : `<div class="no-img"><span style="font-size:28px">🖼</span>No image found</div>`;
+        : `<div class="no-img" id="noposter-${sanitizeId(cfg.name)}">
+            <span style="font-size:22px;margin-bottom:4px;">🖼</span>
+            <span style="font-size:10px;color:var(--amber);font-weight:700;margin-bottom:6px;">No poster found</span>
+            ${filmSearchUrl ? `<button class="find-poster-btn" data-url="${filmSearchUrl}" data-site="${cfg.name}" style="font-size:10px;padding:4px 8px;background:#2a1e00;border:1px solid #6a4a00;border-radius:4px;color:var(--amber);cursor:pointer;margin-bottom:6px;">🔍 Open ${cfg.name} page</button>` : ''}
+            <input type="text" class="poster-url-input" placeholder="Paste image URL here…"
+                style="width:100%;font-size:10px;padding:4px 6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);">
+            <button class="poster-url-set" data-site="${cfg.name}" style="font-size:10px;padding:3px 8px;margin-top:4px;background:#1a3a1a;border:1px solid #2a5a2a;border-radius:4px;color:#81c784;cursor:pointer;">✓ Use this URL</button>
+           </div>`;
+    const filmDetailUrl = (cfg.name === 'Letterboxd' && entry.filmUrl) ? entry.filmUrl : '';
     const imgPath    = computeImagePath(cfg);
     const fieldsHTML = buildFieldsHTML(cfg, entry);
 

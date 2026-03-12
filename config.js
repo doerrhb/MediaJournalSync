@@ -3,7 +3,7 @@ const SITE_CONFIGS = [
         name: "Letterboxd",
         urlPattern: "letterboxd.com",
         pathPattern: "/diary/",
-        fetchDetail: false,       // poster is IN the diary row — no detail fetch needed
+        fetchDetail: true,        // fallback for when in-row thumbnail is a lazy-load placeholder
         titleStripYear: true,     // "Bloodsport (1988)" → title="Bloodsport" year="1988"
         sheetTab: "Movies",
         csvFields: ["title", "date", "rating", "year"],
@@ -26,8 +26,11 @@ const SITE_CONFIGS = [
             ratingSelector: "td.col-rating span.rating",
             ratingParse: "letterboxd-class",
             // Poster confirmed in row DOM: <img class="image" src="a.ltrbxd.com/resized/sm/upload/...">
-            // getBestSrc picks up srcset 2x, upscaleImage converts to 1000×1500
-            image: "img.image"
+            // getBestSrc picks up srcset 2x, upscaleImage converts to 1000×1500.
+            // fetchDetail=true provides fallback via film page when row has empty-poster placeholder.
+            image: "img.image",
+            // Film detail page poster (e.g. letterboxd.com/film/the-artifice-girl/)
+            detailImage: ".film-poster img, #film-poster img, section.poster-container img"
         },
         filename: "letterboxd_movies.csv",
         folder: "Images/movies"
@@ -88,8 +91,6 @@ const SITE_CONFIGS = [
         urlPattern: "boardgamegeek.com",
         pathPattern: "geekplay.php",
         fetchDetail: true,
-        // Date: extractBGGDate() scans preceding <tr> siblings for a[href*='/plays/bydate/']
-        // Rating: extractBGGRating() scans surrounding <tr> siblings for span[ng-show*="ratingitem.rating"]
         waitForSelector: "main table tr a[href*='/boardgame/']",
         sheetTab: "Board Games",
         csvFields: ["title", "date", "rating"],

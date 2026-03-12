@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('api', {
     appendCSV:        (args)   => ipcRenderer.invoke('append-csv', args),
     syncSheets:       (args)   => ipcRenderer.invoke('sync-sheets', args),
     gitPush:          ()       => ipcRenderer.invoke('git-push'),
+    pingSheets:       ()       => ipcRenderer.invoke('ping-sheets'),
+    readLastRow:      (args)   => ipcRenderer.invoke('read-last-row', args),
     loadSettings:     ()       => ipcRenderer.invoke('load-settings'),
     saveSettings:     (s)      => ipcRenderer.invoke('save-settings', s),
     openFolder:       (f)      => ipcRenderer.invoke('open-folder', f),

@@ -94,9 +94,9 @@ function saveSettings(s) {
 // ── Main window ───────────────────────────────────────────────────────────────
 function createMainWindow() {
     mainWin = new BrowserWindow({
-        width:  1060,
+        width:  1200,
         height: 860,
-        minWidth:  800,
+        minWidth:  900,
         minHeight: 640,
         backgroundColor: '#0f0f1a',
         titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
@@ -344,37 +344,63 @@ async function loadBGGRating(gameUrl) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// IMAGE NORMALIZATION
-// All saved posters are normalized to PNG at a consistent size:
-//   Portrait (h/w >= 1.2):  600 × 900  (standard movie/book/game poster)
-//   Near-square (0.85–1.2): 600 × 600
-//   Landscape (<0.85):      600 × 400  (rare — board game box art, etc.)
-// Source format (jpg, webp, gif, etc.) is always converted to PNG.
+// IMAGE NORMALIZATION  (mirrors processImage() in index.html)
+// All saved posters are normalized to:  506 × 759 px  PNG
+//   - letterbox-fit: maintain source aspect ratio, fit WITHIN the frame
+//   - transparent padding (not black bars) to fill unused space
+//   - any source format (jpg, webp, gif …) is converted to PNG
+// Target size matches the media card display dimensions used in the viewer.
 // ══════════════════════════════════════════════════════════════════════════════
+
+const TARGET_W = 506;
+const TARGET_H = 759;
 
 function normalizeImageBuffer(rawBuffer) {
     try {
         const img = nativeImage.createFromBuffer(rawBuffer);
         if (img.isEmpty()) {
-            logWarn('APP', '  Image normalize: could not decode buffer, saving as-is');
+            logWarn('APP', '  normalize: could not decode image — saving raw');
             return rawBuffer;
         }
-        const { width, height } = img.getSize();
-        if (width === 0 || height === 0) return img.toPNG();
 
-        const aspect = height / width;
-        let targetW;
-        if (aspect >= 1.2)       targetW = 600;  // portrait
-        else if (aspect <= 0.85) targetW = 600;  // landscape
-        else                     targetW = 600;  // near-square
+        const { width: srcW, height: srcH } = img.getSize();
+        if (srcW === 0 || srcH === 0) {
+            logWarn('APP', '  normalize: zero-dimension image — saving raw');
+            return rawBuffer;
+        }
 
-        const targetH = Math.round(targetW * aspect);
-        logDebug('APP', `  Image normalize: ${width}×${height} → ${targetW}×${targetH} PNG`);
+        // ── Step 1: calculate letterbox draw size (fit-within, maintain AR) ─
+        const scaleX  = TARGET_W / srcW;
+        const scaleY  = TARGET_H / srcH;
+        const scale   = Math.min(scaleX, scaleY);
+        const drawW   = Math.max(1, Math.round(srcW * scale));
+        const drawH   = Math.max(1, Math.round(srcH * scale));
+        const offsetX = Math.floor((TARGET_W - drawW) / 2);
+        const offsetY = Math.floor((TARGET_H - drawH) / 2);
 
-        const resized = img.resize({ width: targetW, height: targetH, quality: 'best' });
-        return resized.toPNG();
-    } catch(e) {
-        logError('APP', `  Image normalize error: ${e.message}`);
+        logDebug('APP', `  normalize: ${srcW}×${srcH} → draw ${drawW}×${drawH} at (${offsetX},${offsetY}) in ${TARGET_W}×${TARGET_H}`);
+
+        // ── Step 2: resize the source to draw dimensions ─────────────────────
+        const resized     = img.resize({ width: drawW, height: drawH, quality: 'best' });
+        const resizedBgra = resized.toBitmap();   // raw BGRA, row-major
+
+        // ── Step 3: allocate a transparent 506×759 BGRA canvas ───────────────
+        const canvas = Buffer.alloc(TARGET_W * TARGET_H * 4, 0);  // all zeros = transparent
+
+        // ── Step 4: blit resized image row-by-row into the canvas ────────────
+        for (let y = 0; y < drawH; y++) {
+            const srcOff = y * drawW * 4;
+            const dstOff = ((y + offsetY) * TARGET_W + offsetX) * 4;
+            resizedBgra.copy(canvas, dstOff, srcOff, srcOff + drawW * 4);
+        }
+
+        // ── Step 5: encode canvas as PNG ─────────────────────────────────────
+        const final = nativeImage.createFromBitmap(canvas, { width: TARGET_W, height: TARGET_H });
+        logDebug('APP', `  normalize: → ${TARGET_W}×${TARGET_H} PNG (transparent letterbox)`);
+        return final.toPNG();
+
+    } catch (e) {
+        logError('APP', `  normalize error: ${e.message} — saving raw`);
         return rawBuffer;
     }
 }
@@ -470,7 +496,7 @@ ipcMain.handle('sync-sheets', async (event, { entry, config }) => {
     const scriptUrl = settings.sheetsScriptUrl;
     if (!scriptUrl) {
         logWarn(config.name, 'Sheets sync skipped — no script URL configured');
-        return { skipped: true };
+        return { skipped: true, reason: 'not_configured' };
     }
 
     const tabNames = settings.sheetsTabNames || {};
@@ -481,9 +507,13 @@ ipcMain.handle('sync-sheets', async (event, { entry, config }) => {
 
     try {
         const result = await postJSON(scriptUrl, { tab: tabName, row });
-        if (result.success && result.skipped) logWarn(config.name, '  Sheets: duplicate row, skipped');
-        else if (result.success)              logInfo(config.name, '  ✓ Sheets row appended');
-        else                                  logError(config.name, `  Sheets error: ${result.error}`);
+        if (result.rowNumber) {
+            logInfo(config.name, `  ✓ Sheets row appended at row ${result.rowNumber}`);
+        } else if (result.success) {
+            logInfo(config.name, `  ✓ Sheets row appended (no rowNumber in response)`);
+        } else {
+            logError(config.name, `  Sheets error: ${result.error}`);
+        }
         return result;
     } catch (err) {
         logError(config.name, `  Sheets POST failed: ${err.message}`);
@@ -491,9 +521,58 @@ ipcMain.handle('sync-sheets', async (event, { entry, config }) => {
     }
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// GITHUB
-// ══════════════════════════════════════════════════════════════════════════════
+// Quick connectivity check — calls doGet on the Apps Script
+ipcMain.handle('ping-sheets', async () => {
+    const settings  = loadSettings();
+    const scriptUrl = settings.sheetsScriptUrl;
+    if (!scriptUrl) return { ok: false, reason: 'not_configured' };
+
+    logInfo('APP', `Pinging Sheets script: ${scriptUrl}`);
+    return new Promise(resolve => {
+        const parsed = new URL(scriptUrl);
+        const proto  = parsed.protocol === 'https:' ? https : http;
+        const req    = proto.get(scriptUrl, { headers: { 'User-Agent': CHROME_UA } }, res => {
+            let raw = '';
+            res.on('data', c => raw += c);
+            res.on('end', () => {
+                try {
+                    const j = JSON.parse(raw);
+                    if (j.pong) { logInfo('APP', '  Sheets ping: OK'); resolve({ ok: true }); }
+                    else        { logWarn('APP', `  Sheets ping: unexpected response — ${raw.slice(0,80)}`); resolve({ ok: false, reason: 'bad_response' }); }
+                } catch {
+                    // Apps Script redirect responses aren't JSON — still means it's reachable
+                    logInfo('APP', `  Sheets ping: HTTP ${res.statusCode} — reachable`);
+                    resolve({ ok: res.statusCode < 500 });
+                }
+            });
+        });
+        req.on('error', err => {
+            logWarn('APP', `  Sheets ping failed: ${err.message}`);
+            resolve({ ok: false, reason: err.message });
+        });
+        req.setTimeout(8000, () => { req.destroy(); resolve({ ok: false, reason: 'timeout' }); });
+    });
+});
+
+// Fetch the last data row from a specific tab (used for fuzzy duplicate check)
+ipcMain.handle('read-last-row', async (event, { tab }) => {
+    const settings  = loadSettings();
+    const scriptUrl = settings.sheetsScriptUrl;
+    if (!scriptUrl) return { ok: false, reason: 'not_configured' };
+
+    const url = `${scriptUrl}?action=lastRow&tab=${encodeURIComponent(tab)}`;
+    logInfo('APP', `Fetching last row for tab "${tab}"`);
+
+    try {
+        const raw = await getFollowRedirects(url, 6);
+        const j   = JSON.parse(raw);
+        logInfo('APP', `  Last row [${tab}]: ${JSON.stringify(j).slice(0, 120)}`);
+        return { ok: true, row: j.row || null };
+    } catch (err) {
+        logWarn('APP', `  Last row [${tab}] failed: ${err.message}`);
+        return { ok: false, reason: err.message };
+    }
+});
 
 ipcMain.handle('git-push', async () => {
     const settings = loadSettings();
@@ -541,6 +620,36 @@ ipcMain.handle('choose-folder',  async ()   => {
 });
 
 // ── Helper ────────────────────────────────────────────────────────────────────
+// GET a URL, following up to maxRedirects 3xx responses.
+// Returns the final response body as a string, or rejects on error/timeout.
+function getFollowRedirects(url, maxRedirects = 6) {
+    return new Promise((resolve, reject) => {
+        let hops = 0;
+
+        function doGet(currentUrl) {
+            const proto  = currentUrl.startsWith('https') ? https : http;
+            const req    = proto.get(currentUrl, { headers: { 'User-Agent': CHROME_UA } }, res => {
+                // Follow 3xx redirects
+                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    res.resume(); // discard body
+                    if (++hops > maxRedirects) return reject(new Error(`Too many redirects for ${currentUrl}`));
+                    const next = res.headers.location.startsWith('http')
+                        ? res.headers.location
+                        : new URL(res.headers.location, currentUrl).href;
+                    return doGet(next);
+                }
+                let raw = '';
+                res.on('data', c => raw += c);
+                res.on('end', () => resolve(raw));
+            });
+            req.on('error', reject);
+            req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
+        }
+
+        doGet(url);
+    });
+}
+
 function postJSON(url, body) {
     return new Promise((resolve, reject) => {
         const data   = JSON.stringify(body);

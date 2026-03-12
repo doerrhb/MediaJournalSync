@@ -58,11 +58,54 @@ For Linux: `npm run build:linux`
 2. Paste this code (replaces everything):
 
 ```javascript
+// doGet: ping + lastRow endpoint
+// ?action=lastRow&tab=Movies  → returns the last data row from that tab
+// (no params)                 → returns { pong: true } for connectivity check
+function doGet(e) {
+  var params = e ? (e.parameter || {}) : {};
+
+  if (params.action === 'lastRow') {
+    try {
+      var ss    = SpreadsheetApp.getActiveSpreadsheet();
+      var sheet = ss.getSheetByName(params.tab);
+      if (!sheet) {
+        return ContentService
+          .createTextOutput(JSON.stringify({ ok: false, error: 'Tab not found' }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      var last = sheet.getLastRow();
+      // Row 1 is the header — if only a header exists, no data yet
+      if (last < 2) {
+        return ContentService
+          .createTextOutput(JSON.stringify({ ok: true, row: null }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      var numCols = sheet.getLastColumn();
+      var rowData = sheet.getRange(last, 1, 1, numCols).getValues()[0];
+      return ContentService
+        .createTextOutput(JSON.stringify({ ok: true, row: rowData }))
+        .setMimeType(ContentService.MimeType.JSON);
+    } catch(err) {
+      return ContentService
+        .createTextOutput(JSON.stringify({ ok: false, error: err.message }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+  }
+
+  // Default: ping
+  return ContentService
+    .createTextOutput(JSON.stringify({ pong: true }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// doPost: append a data row, return the row number
+// Images are named by this row number: row 34 → 0034.png
 function doPost(e) {
   try {
-    var data = JSON.parse(e.postData.contents);
+    var data  = JSON.parse(e.postData.contents);
     var ss    = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName(data.tab);
+
     if (!sheet) {
       return ContentService
         .createTextOutput(JSON.stringify({
@@ -71,25 +114,18 @@ function doPost(e) {
         }))
         .setMimeType(ContentService.MimeType.JSON);
     }
-    // Duplicate check on title + date
-    if (data.row && data.row.length >= 2) {
-      var rows = sheet.getDataRange().getValues();
-      for (var i = 0; i < rows.length; i++) {
-        if (rows[i][0].toString().trim().toLowerCase() === data.row[0].toString().trim().toLowerCase() &&
-            rows[i][1].toString().trim()               === data.row[1].toString().trim()) {
-          return ContentService
-            .createTextOutput(JSON.stringify({success: true, skipped: true}))
-            .setMimeType(ContentService.MimeType.JSON);
-        }
-      }
-    }
+
+    // Always append — never modify or remove existing rows
     sheet.appendRow(data.row);
+    var rowNumber = sheet.getLastRow();
+
     return ContentService
-      .createTextOutput(JSON.stringify({success: true, skipped: false}))
+      .createTextOutput(JSON.stringify({ success: true, rowNumber: rowNumber }))
       .setMimeType(ContentService.MimeType.JSON);
+
   } catch(err) {
     return ContentService
-      .createTextOutput(JSON.stringify({success: false, error: err.message}))
+      .createTextOutput(JSON.stringify({ success: false, error: err.message }))
       .setMimeType(ContentService.MimeType.JSON);
   }
 }
@@ -98,6 +134,10 @@ function doPost(e) {
 3. **Deploy → New deployment → Web app**
 4. Execute as: **Me** | Access: **Anyone**
 5. Copy the Web app URL into the app's Settings → Google Sheets
+
+> **Row 1** of each tab = your header row (add once manually — the app never writes headers).
+> Images are named by sheet row: first data row (row 2) → `0002.png`, row 34 → `0034.png`.
+
 
 ---
 

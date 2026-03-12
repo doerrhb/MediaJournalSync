@@ -129,50 +129,63 @@
         return "";
     }
 
-    // ── BGG rating: find ng-binding span in surrounding table rows ────────────
+    // ── BGG rating: scan surrounding table rows for user's rating span ──────────
+    // The plays log page renders via Angular. The user's rating for each play
+    // appears in the same <tr> or an adjacent one as:
+    //   <span ng-show="collratingctrl.collection.ratingitem.rating > 0" class="ng-binding"> 7 </span>
     function extractBGGRating(row) {
         let tbody = row.parentElement;
         if (!tbody) return "";
 
         const allRows = [...tbody.querySelectorAll('tr')];
-        const myIdx = allRows.indexOf(row);
+        const myIdx   = allRows.indexOf(row);
 
         // Search within ±3 rows of the game row
         const start = Math.max(0, myIdx - 3);
-        const end = Math.min(allRows.length - 1, myIdx + 3);
+        const end   = Math.min(allRows.length - 1, myIdx + 3);
 
         for (let i = start; i <= end; i++) {
             const span = allRows[i].querySelector('span[ng-show*="ratingitem.rating"]');
             if (span) {
                 const text = span.textContent.trim().replace(/\s+/g, '');
-                const m = text.match(/^(\d+(?:\.\d+)?)$/);
+                const m    = text.match(/^(\d+(?:\.\d+)?)$/);
                 if (m && parseFloat(m[1]) <= 10) {
-                    log(`BGG-rating: found "${m[1]}" in row[${i}]`);
+                    log(`BGG-rating: "${m[1]}" found in row[${i}]`);
                     return m[1];
                 }
                 log(`BGG-rating: span found but not numeric: "${text.slice(0,20)}"`);
             }
         }
 
-        // Also try a broader search of the whole table
+        // Broader search: entire table
         const anySpan = tbody.querySelector('span[ng-show*="ratingitem.rating"]');
         if (anySpan) {
-            const text = anySpan.textContent.trim().replace(/\s+/g, '');
-            const m = text.match(/^(\d+(?:\.\d+)?)$/);
+            const text = anySpan.textContent.trim().replace(/\s+/g,'');
+            const m    = text.match(/^(\d+(?:\.\d+)?)$/);
             if (m && parseFloat(m[1]) <= 10) {
-                log(`BGG-rating: found in table (broader search): "${m[1]}"`);
+                log(`BGG-rating: found (broad table search): "${m[1]}"`);
                 return m[1];
             }
         }
 
-        log(`BGG-rating: no rating span found`);
+        log(`BGG-rating: no rating span found in page DOM`);
         return "";
     }
 
-    // ── Serializd date: XPath-based extraction ────────────────────────────────
-    // Month/year heading: /html/body/div/div[2]/div[4]/div/div/div[2]/div[1]/h1  → "February 2026"
-    // Day number:         /html/body/div/div[2]/div[4]/div/div/div[2]/div[2]/a/div/div[2]/div/div[2]/div → "15"
-    function extractSerializdDate() {
+    // ── Serializd date: multi-strategy extraction ─────────────────────────────
+    // Page structure (confirmed via XPath inspection):
+    //   monthGroup div
+    //     div:nth-child(1) > h1          ← "February 2026"
+    //     div:nth-child(2) > a.diary-log ← row
+    //       a > div > div:nth-child(2) > div > div:nth-child(2) > div  ← "February 15"
+    //
+    // Strategy A (XPath absolute): use the exact XPaths provided
+    // Strategy B (CSS relative):   look inside row's <a> for the day div
+    // Strategy C (ancestor h1):    walk up to find the month/year heading sibling
+    // Combine day + "Month YYYY" h1 if needed
+    function extractSerializdDate(row) {
+        const MON = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+
         function xpathText(xpath) {
             try {
                 const r = document.evaluate(xpath, document, null, XPathResult.STRING_TYPE, null);
@@ -180,35 +193,79 @@
             } catch(e) { return ''; }
         }
 
+        // ── Strategy A: absolute XPaths ───────────────────────────────────────
         const MONTH_XPATH = '/html/body/div/div[2]/div[4]/div/div/div[2]/div[1]/h1';
         const DAY_XPATH   = '/html/body/div/div[2]/div[4]/div/div/div[2]/div[2]/a/div/div[2]/div/div[2]/div';
+        let monthYearText = xpathText(MONTH_XPATH);
+        let dayText       = xpathText(DAY_XPATH);
+        log(`Serializd XPath: month="${monthYearText}" day="${dayText}"`);
 
-        const monthYear = xpathText(MONTH_XPATH);
-        const day       = xpathText(DAY_XPATH);
-        log(`Serializd XPath: monthYear="${monthYear}" day="${day}"`);
+        // ── Strategy B: CSS selector inside row's <a> child ───────────────────
+        if (!dayText) {
+            const dayEl = row.querySelector('a > div > div:nth-child(2) > div > div:nth-child(2) > div');
+            if (dayEl) { dayText = dayEl.textContent.trim(); log(`Serializd day (CSS): "${dayText}"`); }
+        }
 
-        if (monthYear && day) {
-            // "February 2026" + "15" → normalizeDate("15 February 2026")
-            const dayNum = parseInt(day.replace(/\D/g,''), 10);
-            if (!isNaN(dayNum)) {
-                const parsed = normalizeDate(`${dayNum} ${monthYear}`);
-                if (parsed) { log(`Serializd date: ${parsed}`); return parsed; }
+        // ── Strategy C: walk ancestors for h1 month/year heading ─────────────
+        if (!monthYearText) {
+            let el = row;
+            outer: for (let level = 0; level < 10; level++) {
+                el = el.parentElement;
+                if (!el) break;
+                // Check preceding siblings of this element for an h1
+                for (let sib = el.previousElementSibling; sib; sib = sib.previousElementSibling) {
+                    const h1 = sib.tagName === 'H1' ? sib : sib.querySelector('h1');
+                    if (h1) {
+                        const t = h1.textContent.trim();
+                        if (/[A-Za-z]/.test(t) && /\d{4}/.test(t) && t.length < 25) {
+                            monthYearText = t;
+                            log(`Serializd month h1 at ancestor level ${level}: "${t}"`);
+                            break outer;
+                        }
+                    }
+                }
             }
         }
 
-        // Fallback: look for any h1/h2/h3 near the diary entry whose text is a month+year
-        const months = {january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
-        const headings = [...document.querySelectorAll('h1, h2, h3')];
-        for (const h of headings) {
-            const text = h.textContent.trim();
-            const m = text.match(/^([A-Za-z]+)\s+(\d{4})$/);
-            if (m && months[m[1].toLowerCase()]) {
-                log(`Serializd date fallback: heading "${text}" — no day available`);
-                break; // Can't build full date without day
+        // ── Combine ───────────────────────────────────────────────────────────
+        // dayText: "February 15"  OR  "15"  OR  "February 15, 2026"
+        // monthYearText: "February 2026"
+
+        // Try parsing dayText as a complete date first (e.g. "February 15, 2026")
+        if (dayText) {
+            const full = normalizeDate(dayText);
+            if (full) { log(`Serializd date from day element alone: ${full}`); return full; }
+        }
+
+        // Combine: extract year from monthYearText, month from either, day number
+        let mon = null, yr = null, day = null;
+
+        if (monthYearText) {
+            const m = monthYearText.match(/([A-Za-z]+)[,\s]+(\d{4})/);
+            if (m) { mon = MON[m[1].toLowerCase().slice(0,3)]; yr = m[2]; }
+        }
+
+        if (dayText) {
+            // "February 15" → month override + day
+            const mdy = dayText.match(/([A-Za-z]+)\s+(\d{1,2})/);
+            if (mdy) {
+                const parsedMon = MON[mdy[1].toLowerCase().slice(0,3)];
+                if (parsedMon) mon = parsedMon;
+                day = parseInt(mdy[2], 10);
+            } else {
+                // Just a number "15"
+                const dm = dayText.match(/(\d{1,2})/);
+                if (dm) day = parseInt(dm[1], 10);
             }
         }
 
-        log(`Serializd date: could not determine date`);
+        if (mon && day && yr) {
+            const result = `${mon}/${day}/${yr}`;
+            log(`Serializd date combined: ${result} (mon=${mon} day=${day} yr=${yr})`);
+            return result;
+        }
+
+        log(`Serializd date: incomplete — month="${monthYearText}" day="${dayText}"`);
         return "";
     }
 
@@ -286,18 +343,23 @@
 
     const getBestSrc = (img) => {
         if (!img) return null;
+        // Check data-srcset attribute first (lazy-load pattern)
         const dataSrcset = img.getAttribute('data-srcset');
         if (dataSrcset) {
             const sources = dataSrcset.split(',').map(s => s.trim().split(' ')[0]).filter(Boolean);
             if (sources.length > 0) return sources[sources.length - 1];
         }
-        const srcset = img.getAttribute('srcset');
-        if (srcset) {
-            const sources = srcset.split(',').map(s => s.trim().split(' ')[0]).filter(Boolean);
+        // Use img.srcset DOM property — set by React/JS even if the HTML attribute lags behind
+        const srcsetProp = img.srcset || img.getAttribute('srcset') || '';
+        if (srcsetProp) {
+            const sources = srcsetProp.split(',').map(s => s.trim().split(' ')[0]).filter(Boolean);
             if (sources.length > 0) return sources[sources.length - 1];
         }
+        // currentSrc = what the browser actually resolved and loaded (post-React hydration)
+        if (img.currentSrc && !img.currentSrc.startsWith('data:')) return img.currentSrc;
+        // img.src DOM property catches React-set values; getAttribute reads the raw HTML attribute
         return img.getAttribute('data-src') || img.getAttribute('data-original') ||
-               img.getAttribute('data-lazy-src') || img.getAttribute('src');
+               img.getAttribute('data-lazy-src') || img.src || img.getAttribute('src');
     };
 
     const isInvalidImage = (url) => {
@@ -425,7 +487,7 @@
         date = extractBGGDate(row);
 
     } else if (config.name === 'Serializd') {
-        date = extractSerializdDate();
+        date = extractSerializdDate(row);
 
     } else if (selectors.dateSelector) {
         // Generic selector-based extraction
@@ -444,7 +506,14 @@
     // ── Rating ────────────────────────────────────────────────────────────────
 
     log(`Extracting rating...`);
-    const rating = extractRating(row, selectors, config.name);
+    let rating = "";
+
+    if (config.name === 'BoardGameGeek') {
+        // Rating is in the Angular-rendered DOM — scan surrounding rows
+        rating = extractBGGRating(row);
+    } else {
+        rating = extractRating(row, selectors, config.name);
+    }
 
     // ── Platform (Backloggd) ──────────────────────────────────────────────────
 
@@ -458,13 +527,42 @@
 
     let poster = null;
 
-    if (config.fetchDetail && first && first.href) {
+    // ── Letterboxd: try local row image first; only hit detail page if it's a placeholder ──
+    if (config.name === 'Letterboxd' && selectors.image) {
+        const img = row.querySelector(selectors.image);
+        if (img) {
+            let src = getBestSrc(img);
+            if (src) {
+                if (!src.startsWith('http')) src = new URL(src, window.location.href).href;
+                if (!isInvalidImage(src)) {
+                    poster = upscaleImage(src);
+                    log(`Local poster: ${poster}`);
+                } else {
+                    log(`Local image invalid/placeholder: ${src}`);
+                }
+            }
+        }
+        if (!poster) log(`Image selector '${selectors.image}' returned nothing.`);
+    }
+
+    if (config.fetchDetail && !poster && first && first.href) {
         let detailLink = first;
         if (selectors.detailLinkSelector) {
             const alt = row.querySelector(selectors.detailLinkSelector);
             if (alt && alt.href) { detailLink = alt; log(`detailLinkSelector: ${alt.href}`); }
         }
-        const fetchUrl = detailLink.href;
+        let fetchUrl = detailLink.href;
+
+        // Letterboxd: normalize user diary URL → canonical film page
+        // e.g. letterboxd.com/doerrhb/film/the-artifice-girl/ → letterboxd.com/film/the-artifice-girl/
+        if (config.name === 'Letterboxd') {
+            const lbMatch = fetchUrl.match(/(letterboxd\.com\/)(?:[^\/]+\/)(film\/[^\/]+\/?)/);
+            if (lbMatch) {
+                fetchUrl = 'https://' + lbMatch[1] + lbMatch[2];
+                log(`Letterboxd detail URL normalized: ${fetchUrl}`);
+            }
+        }
+
         log(`Fetching detail page: ${fetchUrl}`);
         try {
             const resp = await fetch(fetchUrl);
@@ -486,8 +584,11 @@
                 }
             }
 
-            // 2. OpenGraph (skip for Letterboxd — their OG is a widescreen backdrop)
-            if (!poster && config.name !== 'Letterboxd') {
+            // 2. OpenGraph meta tag
+            // NOTE: Skip og:image on Letterboxd DIARY page (backdrop crop) but film detail pages
+            //       have the real vertical poster as og:image — allow it here since fetchUrl
+            //       has already been normalized to the canonical film page.
+            if (!poster) {
                 const og = doc.querySelector('meta[property="og:image"], meta[property="og:image:url"]');
                 if (og && og.content) {
                     const abs = new URL(og.content, fetchUrl).href;
@@ -531,9 +632,9 @@
         } catch(err) { log(`Error fetching detail page: ${err.message}`); }
     }
 
-    // ── Local image fallback ──────────────────────────────────────────────────
+    // ── Local image fallback (non-Letterboxd sites) ───────────────────────────
 
-    if (!poster && selectors.image) {
+    if (!poster && config.name !== 'Letterboxd' && selectors.image) {
         const img = row.querySelector(selectors.image);
         if (img) {
             let src = getBestSrc(img);
@@ -546,7 +647,7 @@
         if (!poster) log(`Image selector '${selectors.image}' returned nothing.`);
     }
 
-    if (poster) poster = upscaleImage(poster);
+    if (poster && !poster.startsWith('data:')) poster = upscaleImage(poster);
 
     // detailUrl: for BGG, main.js will do a live Angular page load to get rating
     const detailUrl = (config.name === 'BoardGameGeek' && first) ? first.href : null;

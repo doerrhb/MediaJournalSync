@@ -62,6 +62,24 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 #scanBar { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 #scanBar h2 { font-size: 16px; font-weight: 700; flex: 1; }
 
+/* ── Status bar ── */
+#statusBar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 7px; font-size: 12px; color: var(--muted); flex-shrink: 0;
+}
+#statusDot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; transition: background .3s; }
+#statusBar.ready   #statusDot { background: var(--muted); }
+#statusBar.scanning #statusDot { background: var(--amber); animation: pulse 1s infinite; }
+#statusBar.done    #statusDot { background: var(--green); }
+#statusBar.error   #statusDot { background: var(--red); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ── Site checkbox ── */
+.sc-check { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.sc-check input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+.sc-check label { font-size: 12px; font-weight: 700; cursor: pointer; }
+
 #siteGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
 .site-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px; transition: border-color .2s; }
 .site-card.scanning { border-color: var(--amber); }
@@ -79,10 +97,12 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 .sc-login:hover { color: var(--text); border-color: var(--muted); }
 
 /* ── Entry cards ── */
-.entry-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; transition: border-color .2s; }
-.entry-card.approved { border-color: var(--green); }
-.entry-card.skipped  { opacity: .45; }
-.entry-card.saved    { border-color: #1e5a1e; background: #0e1e0e; }
+#entryList { display: grid; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); gap: 14px; align-items: start; }
+.entry-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; transition: border-color .2s; }
+.entry-card.approved  { border-color: var(--green); }
+.entry-card.duplicate { border-color: var(--amber); }
+.entry-card.skipped   { opacity: .45; }
+.entry-card.saved     { border-color: #1e5a1e; background: #0e1e0e; }
 .ec-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--bg3); border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; }
 .ec-site-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .ec-site-dot.Letterboxd    { background: var(--lb);  }
@@ -133,10 +153,20 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 .ec-approve { background: #1a4a1a; color: #81c784; }
 .ec-approve:hover { background: #1e6a1e; }
 .ec-approve.active { background: var(--green); color: #000; }
+.ec-approve.dup-override { background: #3a2a00; color: var(--amber); border: 1px solid #6a4a00; }
+.ec-approve.dup-override:hover { background: #4a3800; }
 .ec-skip    { background: var(--bg3); color: var(--muted); }
 .ec-skip:hover { background: #3a1a1a; color: #ef9a9a; }
 .ec-skip.active { background: #3a1a1a; color: var(--red); }
 .ec-saved-label { font-size: 11px; color: var(--green); font-weight: 700; }
+
+.dup-banner {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 8px 14px; background: #2a1e00; border-bottom: 1px solid #4a3400;
+    font-size: 11px; color: #ffcc80; line-height: 1.4;
+}
+.dup-banner .dup-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+.dup-banner strong { color: #ffd54f; }
 
 /* ════════════════════ LOG PAGE ════════════════════ */
 #page-logs { padding: 0; display: flex; flex-direction: column; }
@@ -268,14 +298,14 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
   <div class="page active" id="page-scan">
     <div id="scanBar">
       <h2>Sites</h2>
-      <button class="btn primary" id="scanAllBtn">▶ Scan All Sites</button>
+      <button class="btn primary" id="scanAllBtn">▶ Scan Selected Sites</button>
     </div>
     <div id="siteGrid"></div>
+    <div id="statusBar" class="ready">
+      <div id="statusDot"></div>
+      <span id="statusText">Ready</span>
+    </div>
     <div id="reviewArea" style="display:none;">
-      <h2 style="margin-bottom:4px;">Found Entries</h2>
-      <div id="reviewHint" style="font-size:12px;color:var(--muted);margin-bottom:12px;">
-        Review each entry, edit anything wrong, then click <strong>Update All Approved</strong>.
-      </div>
       <div id="entryList"></div>
     </div>
   </div>
@@ -347,7 +377,11 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
             <input type="text" id="gitRepoInput" placeholder="e.g. C:\Users\You\my-media-site">
             <button class="browse-btn" id="browseRepoBtn">Browse…</button>
           </div>
-          <span class="hint">Leave blank to skip. Runs git add → commit → push after every update.</span>
+          <span class="hint">Runs git add → commit → push after every successful update.</span>
+        </div>
+        <div class="s-field" style="flex-direction:row;align-items:center;gap:10px;">
+          <input type="checkbox" id="gitAutoPushToggle" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;">
+          <label for="gitAutoPushToggle" style="cursor:pointer;font-size:13px;text-transform:none;letter-spacing:0;">Enable auto-push after each update</label>
         </div>
         <button class="s-save-btn" id="saveGitBtn">Save Git Settings</button>
         <div class="s-msg" id="gitMsg"></div>

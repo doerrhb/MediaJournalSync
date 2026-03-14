@@ -592,10 +592,21 @@
             //       have the real vertical poster as og:image — allow it here since fetchUrl
             //       has already been normalized to the canonical film page.
             if (!poster) {
-                const og = doc.querySelector('meta[property="og:image"], meta[property="og:image:url"]');
-                if (og && og.content) {
-                    const abs = new URL(og.content, fetchUrl).href;
-                    if (!isInvalidImage(abs)) { poster = abs; log(`Detail poster via OpenGraph: ${poster}`); }
+                // BGG: og:image is a landscape crop social card. Avoid it and try to find the uncropped preview link first.
+                if (config.name === 'BoardGameGeek') {
+                    const repLink = doc.querySelector('link[rel="preload"][as="image"][href*="__itemrep"]');
+                    if (repLink) {
+                        const href = repLink.getAttribute('href');
+                        if (href) { poster = new URL(href, fetchUrl).href; log(`Detail poster via BGG itemrep link (uncropped): ${poster}`); }
+                    }
+                }
+                
+                if (!poster) {
+                    const og = doc.querySelector('meta[property="og:image"], meta[property="og:image:url"]');
+                    if (og && og.content) {
+                        const abs = new URL(og.content, fetchUrl).href;
+                        if (!isInvalidImage(abs)) { poster = abs; log(`Detail poster via OpenGraph: ${poster}`); }
+                    }
                 }
             }
 

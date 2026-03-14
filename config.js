@@ -103,8 +103,7 @@ const SITE_CONFIGS = [
         selectors: {
             entryLink: 'main table a[href*="/boardgame/"]',
             row: "tr[id^='play_'], .collection_table tr, main table tr, tr",
-            image: "img",
-            detailImage: ".game-header-image-container img, img[src*='cf.geekdo-images.com/'][src*='pic']"
+            image: "img"
         },
         filename: "bgg_plays.csv",
         folder: "Images/boardgames"
